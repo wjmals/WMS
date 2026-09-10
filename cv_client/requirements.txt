@@ -1,0 +1,5 @@
+ultralytics==8.0.220
+opencv-python-headless==4.8.1.78
+firebase-admin==6.2.0
+shapely==2.0.2
+python-dotenv==1.0.0

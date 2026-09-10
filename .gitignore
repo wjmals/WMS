@@ -1,0 +1,33 @@
+# Node.js
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Environment & Secrets (보안 필수)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+secrets.toml
+serviceAccountKey.json
+
+# Database & Cache
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS Files
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
