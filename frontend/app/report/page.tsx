@@ -136,9 +136,6 @@ export default function AIReportPage() {
           <h1 className="text-3xl font-extrabold tracking-tight text-textMain dark:text-white">
             AI 재고 상태 분석 리포트
           </h1>
-          <p className="text-sm text-textMuted mt-1">
-            MySQL 데이터베이스 실시간 연동 • 품목별 AI 진단 및 의사결정 권고사항
-          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button
@@ -174,7 +171,7 @@ export default function AIReportPage() {
             exit={{ opacity: 0, y: -10 }}
             className="bg-white dark:bg-gray-900 border border-blue-200 dark:border-blue-900 rounded-2xl p-6 shadow-md"
           >
-            <h3 className="font-bold text-lg mb-4 text-textMain dark:text-white">신규 재고 항목 추가 (MySQL DB 저장)</h3>
+            <h3 className="font-bold text-lg mb-4 text-textMain dark:text-white">신규 재고 항목 추가</h3>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
               <div className="md:col-span-2">
                 <label className="text-xs font-semibold text-textMuted mb-1 block">품목명 *</label>
@@ -219,7 +216,7 @@ export default function AIReportPage() {
                 disabled={adding}
                 className="px-5 py-2 rounded-xl bg-primary text-white text-sm font-semibold hover:bg-blue-600 transition-colors disabled:opacity-50"
               >
-                {adding ? '저장 중...' : 'MySQL에 저장'}
+                {adding ? '저장 중...' : '저장하기'}
               </button>
             </div>
           </motion.div>
@@ -281,7 +278,7 @@ export default function AIReportPage() {
         {loading ? (
           <div className="flex items-center justify-center py-20 text-textMuted gap-2">
             <RefreshCw size={20} className="animate-spin text-primary" />
-            <span>MySQL DB에서 데이터를 불러오는 중...</span>
+            <span>데이터를 불러오는 중...</span>
           </div>
         ) : data.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-gray-900 rounded-2xl border border-dashed border-gray-200 text-textMuted gap-2">
@@ -524,7 +521,7 @@ export default function AIReportPage() {
       {/* 하단 DB 정보 표시 */}
       <div className="flex items-center gap-2 text-xs text-textMuted border-t border-gray-100 dark:border-gray-800 pt-4 mt-2">
         <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-        <span>데이터 소스: MySQL DB (wms_inventory.inventory_items) — 실시간 동기화 완료 (총 {data.length}건)</span>
+        <span>실시간 데이터 동기화 완료 (총 {data.length}건)</span>
       </div>
     </div>
   );

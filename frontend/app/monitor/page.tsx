@@ -258,7 +258,7 @@ export default function MonitorPage() {
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
           <span className="text-xs font-bold text-red-500 uppercase">재고 부족 감지 알림</span>
           <h3 className="text-3xl font-black text-red-600 mt-1">{shortageCount} 건</h3>
-          <p className="text-xs text-red-500 font-semibold mt-1">감지 시 MySQL 재고 테이블 자동 갱신</p>
+          <p className="text-xs text-red-500 font-semibold mt-1">감지 시 재고 데이터 자동 갱신</p>
         </div>
 
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
@@ -484,7 +484,7 @@ export default function MonitorPage() {
             <div className="flex justify-between items-center pb-3 border-b border-gray-100 dark:border-gray-800">
               <h3 className="font-bold text-sm text-textMain dark:text-white flex items-center gap-2">
                 <Clock size={16} className="text-primary" />
-                최근 AI 감지 이력 (MySQL)
+                최근 AI 감지 이력
               </h3>
               <button onClick={fetchLogs} className="p-1 hover:bg-gray-100 rounded-lg text-textMuted">
                 <RefreshCw size={14} />
