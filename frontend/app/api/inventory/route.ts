@@ -14,12 +14,18 @@ import {
 
 const COL = 'inventory_items';
 
-// 샘플 데이터 (Firestore 연결 실패 시 fallback)
+// 수산물 실제 데이터 (seafood.json)
 const fallbackItems = [
-  { id: 'WMS-2026-001', name: '광어 (냉동 필렛)', status: 'safe', statusLabel: '안전 재고', current: 145, safe: 100, diffText: '적정 범위 유지', recommendation: '수요 안정적 → 현 유통 계획 유지', cycle: '월간', date: '2026-09-10' },
-  { id: 'WMS-2026-002', name: '우럭 (활어 수조)', status: 'shortage', statusLabel: '재고 부족', current: 28, safe: 80, diffText: '부족분: -52톤', recommendation: '재고 하한선 이탈 → 즉시 추가 발주 필요', cycle: '주간', date: '2026-09-10' },
-  { id: 'WMS-2026-003', name: '참돔 (선어 급속냉동)', status: 'overstock', statusLabel: '재고 과다', current: 210, safe: 90, diffText: '초과분: +120톤', recommendation: '창고 점유율 초과 → 프로모션 및 출하량 증대 필요', cycle: '월간', date: '2026-09-10' },
-  { id: 'WMS-2026-004', name: '노르웨이 연어 (생연어)', status: 'safe', statusLabel: '안전 재고', current: 85, safe: 75, diffText: '적정 범위 유지', recommendation: '수요 안정적 → 현 유통 계획 유지', cycle: '월간', date: '2026-09-10' },
+  { id: "SEA-2026-001", status: "overstock", statusLabel: "재고 과다", name: "고등어(식용)", current: 50528, safe: 20000, diffText: "초과분: +30528톤", recommendation: "창고 점유율 초과 → 프로모션 및 출하량 증대 필요", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-002", status: "overstock", statusLabel: "재고 과다", name: "명태", current: 52588, safe: 20000, diffText: "초과분: +32588톤", recommendation: "창고 점유율 초과 → 프로모션 및 출하량 증대 필요", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-003", status: "safe", statusLabel: "안전 재고", name: "조기", current: 7019, safe: 10000, diffText: "적정 범위 유지", recommendation: "수요 안정적 → 현 유통 계획 유지", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-004", status: "shortage", statusLabel: "재고 부족", name: "갈치(국내산)", current: 4757, safe: 8000, diffText: "부족분: -3242톤", recommendation: "재고 하한선 이탈 → 즉시 추가 발주 필요", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-005", status: "shortage", statusLabel: "재고 부족", name: "갈치(수입산)", current: 3163, safe: 8000, diffText: "부족분: -4836톤", recommendation: "재고 하한선 이탈 → 즉시 추가 발주 필요", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-006", status: "safe", statusLabel: "안전 재고", name: "오징어(연안산)", current: 9781, safe: 10000, diffText: "적정 범위 유지", recommendation: "수요 안정적 → 현 유통 계획 유지", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-007", status: "overstock", statusLabel: "재고 과다", name: "오징어(원양산)", current: 40915, safe: 20000, diffText: "초과분: +20915톤", recommendation: "창고 점유율 초과 → 프로모션 및 출하량 증대 필요", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-008", status: "safe", statusLabel: "안전 재고", name: "꽁치", current: 9149, safe: 10000, diffText: "적정 범위 유지", recommendation: "수요 안정적 → 현 유통 계획 유지", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-009", status: "shortage", statusLabel: "재고 부족", name: "전갱이", current: 729, safe: 8000, diffText: "부족분: -7270톤", recommendation: "재고 하한선 이탈 → 즉시 추가 발주 필요", cycle: "월간", date: "2026-09-10" },
+  { id: "SEA-2026-010", status: "safe", statusLabel: "안전 재고", name: "삼치", current: 5356, safe: 10000, diffText: "적정 범위 유지", recommendation: "수요 안정적 → 현 유통 계획 유지", cycle: "월간", date: "2026-09-10" }
 ];
 
 // GET /api/inventory

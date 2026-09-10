@@ -35,7 +35,7 @@ export default function InventoryDashboard() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const fetchInventory = () => {
     fetch('/api/inventory')
       .then(res => res.json())
       .then(data => {
@@ -43,6 +43,12 @@ export default function InventoryDashboard() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchInventory();
+    const timer = setInterval(fetchInventory, 3000);
+    return () => clearInterval(timer);
   }, []);
 
   const totalCurrent = items.reduce((acc, i) => acc + (i.current || 0), 0);
@@ -59,10 +65,10 @@ export default function InventoryDashboard() {
           <span className="text-primary text-xs font-bold tracking-wider uppercase mb-1 block">
             SMART WMS INVENTORY & DEMAND AI
           </span>
-          <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-textMain dark:text-white">
+          <h1 className="text-3xl font-bold tracking-tight text-textMain dark:text-white">
             스마트 재고 관리 대시보드
           </h1>
-          <p className="text-base text-textMuted mt-1">
+          <p className="text-sm text-textMuted mt-1">
             실시간 AI 재고 진단, 창고 구역 모니터링 및 시계열 수요 예측 분석
           </p>
         </div>
@@ -83,7 +89,7 @@ export default function InventoryDashboard() {
             <span className="text-xs font-bold uppercase">총 보관 재고량</span>
             <Warehouse size={18} className="text-primary" />
           </div>
-          <h3 className="text-3xl font-black text-textMain dark:text-white">
+          <h3 className="text-2xl font-bold text-textMain dark:text-white">
             {loading ? '—' : `${totalCurrent.toLocaleString()} 톤`}
           </h3>
           <p className="text-xs text-textMuted mt-1">총 {items.length}개 보관 품목 운용 중</p>
@@ -94,7 +100,7 @@ export default function InventoryDashboard() {
             <span className="text-xs font-bold uppercase">안전 재고 품목</span>
             <ShieldCheck size={18} className="text-green-500" />
           </div>
-          <h3 className="text-3xl font-black text-green-600">
+          <h3 className="text-2xl font-bold text-green-600">
             {loading ? '—' : `${safeItems.length} 개`}
           </h3>
           <p className="text-xs text-textMuted mt-1">정상 수급 유지 중</p>
@@ -105,7 +111,7 @@ export default function InventoryDashboard() {
             <span className="text-xs font-bold uppercase">재고 부족 (긴급발주)</span>
             <AlertTriangle size={18} className="text-red-500" />
           </div>
-          <h3 className="text-3xl font-black text-red-600">
+          <h3 className="text-2xl font-bold text-red-600">
             {loading ? '—' : `${shortageItems.length} 개`}
           </h3>
           <p className="text-xs text-red-500 font-semibold mt-1">
@@ -118,7 +124,7 @@ export default function InventoryDashboard() {
             <span className="text-xs font-bold uppercase">재고 과다 (조기출하)</span>
             <Package size={18} className="text-amber-500" />
           </div>
-          <h3 className="text-3xl font-black text-amber-600">
+          <h3 className="text-2xl font-bold text-amber-600">
             {loading ? '—' : `${overstockItems.length} 개`}
           </h3>
           <p className="text-xs text-textMuted mt-1">창고 점유율 초과 주의</p>

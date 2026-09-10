@@ -1,9 +1,9 @@
 [
   {
-    "id": "SEA-2026-001",
+    "id": "WMS-2026-001",
     "status": "overstock",
     "statusLabel": "재고 과다",
-    "name": "고등어(식용)",
+    "name": "전자부품 모듈 (파렛트)",
     "current": 50528,
     "safe": 20000,
     "diffText": "초과분: +30528톤",
@@ -12,10 +12,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-002",
+    "id": "WMS-2026-002",
     "status": "overstock",
     "statusLabel": "재고 과다",
-    "name": "명태",
+    "name": "산업용 원자재 박스",
     "current": 52588,
     "safe": 20000,
     "diffText": "초과분: +32588톤",
@@ -24,10 +24,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-003",
+    "id": "WMS-2026-003",
     "status": "safe",
     "statusLabel": "안전 재고",
-    "name": "조기",
+    "name": "냉동/냉장 식품 케이스",
     "current": 7019,
     "safe": 10000,
     "diffText": "적정 범위 유지",
@@ -36,10 +36,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-004",
+    "id": "WMS-2026-004",
     "status": "shortage",
     "statusLabel": "재고 부족",
-    "name": "갈치(국내산)",
+    "name": "정밀 기계 부품",
     "current": 4757,
     "safe": 8000,
     "diffText": "부족분: -3242톤",
@@ -48,10 +48,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-005",
+    "id": "WMS-2026-005",
     "status": "shortage",
     "statusLabel": "재고 부족",
-    "name": "갈치(수입산)",
+    "name": "수입 화학 물질 용기",
     "current": 3163,
     "safe": 8000,
     "diffText": "부족분: -4836톤",
@@ -60,10 +60,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-006",
+    "id": "WMS-2026-006",
     "status": "safe",
     "statusLabel": "안전 재고",
-    "name": "오징어(연안산)",
+    "name": "자동차 전장 부품",
     "current": 9781,
     "safe": 10000,
     "diffText": "적정 범위 유지",
@@ -72,10 +72,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-007",
+    "id": "WMS-2026-007",
     "status": "overstock",
     "statusLabel": "재고 과다",
-    "name": "오징어(원양산)",
+    "name": "반도체 세라믹 소재",
     "current": 40915,
     "safe": 20000,
     "diffText": "초과분: +20915톤",
@@ -84,10 +84,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-008",
+    "id": "WMS-2026-008",
     "status": "safe",
     "statusLabel": "안전 재고",
-    "name": "꽁치",
+    "name": "가전제품 조립 키트",
     "current": 9149,
     "safe": 10000,
     "diffText": "적정 범위 유지",
@@ -96,10 +96,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-009",
+    "id": "WMS-2026-009",
     "status": "shortage",
     "statusLabel": "재고 부족",
-    "name": "전갱이",
+    "name": "의료용 소모품 팩",
     "current": 729,
     "safe": 8000,
     "diffText": "부족분: -7270톤",
@@ -108,10 +108,10 @@
     "date": "2026-09-10"
   },
   {
-    "id": "SEA-2026-010",
+    "id": "WMS-2026-010",
     "status": "safe",
     "statusLabel": "안전 재고",
-    "name": "삼치",
+    "name": "표준 물류 포장재",
     "current": 5356,
     "safe": 10000,
     "diffText": "적정 범위 유지",

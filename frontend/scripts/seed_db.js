@@ -24,7 +24,7 @@ async function seed() {
     );
   `);
 
-  const rawData = fs.readFileSync(path.join(__dirname, '../data/seafood.json'), 'utf8');
+  const rawData = fs.readFileSync(path.join(__dirname, '../data/inventory.json'), 'utf8');
   const items = JSON.parse(rawData);
 
   const insertQuery = `
@@ -48,7 +48,7 @@ async function seed() {
     ]);
   }
 
-  console.log("Database seeded successfully with seafood data!");
+  console.log("Database seeded successfully with WMS inventory data!");
   await db.close();
 }
 

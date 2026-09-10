@@ -28,7 +28,7 @@ const path = require('path');
     );
   `);
 
-  const dataPath = path.join(__dirname, '../data/seafood.json');
+  const dataPath = path.join(__dirname, '../data/inventory.json');
   const raw = fs.readFileSync(dataPath, 'utf8');
   const items = JSON.parse(raw);
 
@@ -51,6 +51,6 @@ const path = require('path');
     ]);
   }
 
-  console.log('MySQL DB seeded with seafood data');
+  console.log('MySQL DB seeded with WMS inventory data');
   await pool.end();
 })();

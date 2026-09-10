@@ -203,8 +203,8 @@ export default function DeliveryManagementPage() {
       {/* 헤더 & 통계 배너 */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-gray-200 pb-6">
         <div>
-          <div className="flex items-center gap-2 text-primary font-semibold text-sm tracking-wide uppercase mb-1">
-            <Truck size={18} />
+          <div className="flex items-center gap-2 text-primary font-bold text-xs tracking-wider uppercase mb-1">
+            <Truck size={16} />
             DELIVERY TRACKING & WMS LOGISTICS
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-textMain dark:text-white">

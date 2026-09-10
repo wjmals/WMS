@@ -30,4 +30,7 @@ venv/
 # OS Files
 .DS_Store
 Thumbs.db
-*.tsbuildinfo
+# Firebase
+.firebase/
+.firebaserc
+

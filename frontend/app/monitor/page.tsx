@@ -3,7 +3,8 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { 
   Camera, Play, Square, Settings, AlertTriangle, CheckCircle, Package, 
-  ArrowLeft, Zap, Clock, Wifi, WifiOff, RefreshCw, Eye, ShieldCheck, Sparkles 
+  ArrowLeft, Zap, Clock, Wifi, WifiOff, RefreshCw, Eye, ShieldCheck, Sparkles,
+  Plus, Trash2, Upload, X, BookOpen
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
@@ -85,6 +86,14 @@ export default function MonitorPage() {
   const [totalAnalyzed, setTotalAnalyzed] = useState(0);
   const [shortageCount, setShortageCount] = useState(0);
 
+  // AI 품목 학습 데이터 상태
+  const [references, setReferences] = useState<any[]>([]);
+  const [showLearnModal, setShowLearnModal] = useState(false);
+  const [learnName, setLearnName] = useState('');
+  const [learnDesc, setLearnDesc] = useState('');
+  const [learnImage, setLearnImage] = useState<string | null>(null);
+  const [savingReference, setSavingReference] = useState(false);
+
   // 이력 불러오기
   const fetchLogs = useCallback(async () => {
     try {
@@ -94,9 +103,83 @@ export default function MonitorPage() {
     } catch {}
   }, []);
 
+  // 학습 데이터(레퍼런스 이미지) 불러오기
+  const fetchReferences = useCallback(async () => {
+    try {
+      const res = await fetch('/api/vision');
+      const data = await res.json();
+      setReferences(Array.isArray(data) ? data : []);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     fetchLogs();
-  }, [fetchLogs]);
+    fetchReferences();
+  }, [fetchLogs, fetchReferences]);
+
+  // 이미지 파일 선택 처리
+  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setLearnImage(event.target?.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 현재 카메라 화면 캡처하여 학습 이미지로 사용
+  const handleCaptureForLearn = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    const data = canvas.toDataURL('image/jpeg', 0.8);
+    setLearnImage(data);
+  };
+
+  // 품목 학습 데이터 저장
+  const handleSaveReference = async () => {
+    if (!learnName || !learnImage) {
+      alert('품목명과 이미지를 모두 지정해주세요.');
+      return;
+    }
+    setSavingReference(true);
+    try {
+      await fetch('/api/vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: learnName,
+          description: learnDesc,
+          image: learnImage,
+        }),
+      });
+      setLearnName('');
+      setLearnDesc('');
+      setLearnImage(null);
+      setShowLearnModal(false);
+      await fetchReferences();
+      alert(`[${learnName}] 품목 학습 이미지가 등록되었습니다.`);
+    } catch (e) {
+      alert('학습 등록 중 오류가 발생했습니다.');
+    } finally {
+      setSavingReference(false);
+    }
+  };
+
+  // 학습 데이터 삭제
+  const handleDeleteReference = async (id: string, name: string) => {
+    if (!confirm(`[${name}] 학습 레퍼런스를 삭제하시겠습니까?`)) return;
+    try {
+      await fetch(`/api/vision?id=${id}`, { method: 'DELETE' });
+      await fetchReferences();
+    } catch {}
+  };
 
   // 카메라 시작
   const startWebcam = useCallback(async () => {
@@ -214,7 +297,7 @@ export default function MonitorPage() {
             <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
             REAL-TIME CCTV / AI SURVEILLANCE
           </div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-textMain dark:text-white">
+          <h1 className="text-3xl font-bold tracking-tight text-textMain dark:text-white">
             실시간 AI 재고 모니터링
           </h1>
           <p className="text-sm text-textMuted mt-1">
@@ -235,6 +318,14 @@ export default function MonitorPage() {
             </div>
           )}
 
+          <button
+            onClick={() => setShowLearnModal(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm"
+          >
+            <Sparkles size={16} />
+            AI 품목 학습 등록 ({references.length})
+          </button>
+
           <button 
             onClick={() => setShowSettings(!showSettings)} 
             className={`p-2.5 rounded-xl border text-sm font-semibold transition-all ${
@@ -251,19 +342,19 @@ export default function MonitorPage() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
           <span className="text-xs font-bold text-textMuted uppercase">총 누적 AI 분석 건수</span>
-          <h3 className="text-3xl font-black text-textMain dark:text-white mt-1">{totalAnalyzed} 회</h3>
+          <h3 className="text-2xl font-bold text-textMain dark:text-white mt-1">{totalAnalyzed} 회</h3>
           <p className="text-xs text-textMuted mt-1">Groq Vision Llama-4 엔진 적용</p>
         </div>
 
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
           <span className="text-xs font-bold text-red-500 uppercase">재고 부족 감지 알림</span>
-          <h3 className="text-3xl font-black text-red-600 mt-1">{shortageCount} 건</h3>
+          <h3 className="text-2xl font-bold text-red-600 mt-1">{shortageCount} 건</h3>
           <p className="text-xs text-red-500 font-semibold mt-1">감지 시 재고 데이터 자동 갱신</p>
         </div>
 
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
           <span className="text-xs font-bold text-primary uppercase">분석 주기 타이머</span>
-          <h3 className="text-3xl font-black text-primary mt-1">
+          <h3 className="text-2xl font-bold text-primary mt-1">
             {isMonitoring ? `${countdown} 초` : `${intervalSec} 초`}
           </h3>
           <p className="text-xs text-textMuted mt-1">설정된 주기마다 자동 캡처 분석</p>
@@ -479,6 +570,49 @@ export default function MonitorPage() {
             </div>
           )}
 
+          {/* 학습된 AI 품목 레퍼런스 카드 */}
+          <div className="bg-white dark:bg-gray-900 border border-purple-100 dark:border-purple-900/30 rounded-3xl p-5 shadow-sm space-y-3">
+            <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-gray-800">
+              <h3 className="font-bold text-sm text-textMain dark:text-white flex items-center gap-2">
+                <BookOpen size={16} className="text-purple-600" />
+                학습된 AI 품목 이미지 ({references.length}건)
+              </h3>
+              <button
+                onClick={() => setShowLearnModal(true)}
+                className="text-xs text-purple-600 font-bold hover:underline flex items-center gap-1"
+              >
+                <Plus size={14} /> 추가 학습
+              </button>
+            </div>
+
+            {references.length === 0 ? (
+              <div className="py-4 text-center text-textMuted text-xs">
+                아직 등록된 학습 이미지가 없습니다.<br />
+                사진을 등록하여 AI에게 품목을 학습시키세요!
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                {references.map((ref) => (
+                  <div key={ref.id} className="relative group bg-gray-50 dark:bg-gray-800 p-2 rounded-xl border border-gray-200 dark:border-gray-700 flex flex-col gap-1">
+                    {ref.thumbnail && (
+                      <img src={ref.thumbnail} alt={ref.name} className="w-full h-20 object-cover rounded-lg" />
+                    )}
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-bold truncate text-textMain dark:text-white">{ref.name}</span>
+                      <button
+                        onClick={() => handleDeleteReference(ref.id, ref.name)}
+                        className="text-gray-400 hover:text-red-500 p-1"
+                        title="학습 데이터 삭제"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* 실시간 분석 이력 카드 (MySQL monitor_logs) */}
           <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-5 shadow-sm flex flex-col max-h-[480px]">
             <div className="flex justify-between items-center pb-3 border-b border-gray-100 dark:border-gray-800">
@@ -534,6 +668,118 @@ export default function MonitorPage() {
         </div>
 
       </div>
+
+      {/* AI 품목 학습 등록 모달 */}
+      {showLearnModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white dark:bg-gray-900 rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-5">
+            <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center font-bold">
+                  <Sparkles size={18} />
+                </div>
+                <h3 className="font-bold text-lg text-textMain dark:text-white">
+                  AI 품목 사전 학습 등록
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowLearnModal(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="font-bold text-textMain dark:text-gray-200 block mb-1">
+                  품목 라벨명 (예: 갈치, 고등어, 우럭) *
+                </label>
+                <input
+                  type="text"
+                  placeholder="예: 제주 은갈치"
+                  value={learnName}
+                  onChange={(e) => setLearnName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-textMain dark:text-gray-200 block mb-1">
+                  품목 특징 및 설명 (선택)
+                </label>
+                <input
+                  type="text"
+                  placeholder="예: 은색 비늘 반짝임, 박스 포장 형태"
+                  value={learnDesc}
+                  onChange={(e) => setLearnDesc(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-textMain dark:text-gray-200 block mb-1">
+                  학습용 레퍼런스 이미지 등록 *
+                </label>
+                <div className="flex gap-2 mb-2">
+                  <label className="flex-1 cursor-pointer bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 font-bold py-2.5 px-4 rounded-xl text-center flex items-center justify-center gap-2 border border-purple-200 dark:border-purple-800 transition-all">
+                    <Upload size={16} />
+                    사진 파일 업로드
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageFileChange}
+                      className="hidden"
+                    />
+                  </label>
+                  {isMonitoring && (
+                    <button
+                      onClick={handleCaptureForLearn}
+                      className="bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 text-textMain dark:text-gray-200 font-semibold py-2.5 px-4 rounded-xl flex items-center gap-1.5"
+                    >
+                      <Camera size={16} />
+                      현재 화면 캡처
+                    </button>
+                  )}
+                </div>
+
+                {learnImage ? (
+                  <div className="relative rounded-2xl overflow-hidden aspect-video border border-purple-300">
+                    <img src={learnImage} alt="학습 샘플" className="w-full h-full object-cover" />
+                    <button
+                      onClick={() => setLearnImage(null)}
+                      className="absolute top-2 right-2 bg-black/60 text-white p-1 rounded-full hover:bg-black"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl p-6 text-center text-textMuted">
+                    사진을 업로드하거나 현재 카메라 화면을 캡처하여 AI 학습 샘플을 등록하세요.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
+              <button
+                onClick={() => setShowLearnModal(false)}
+                className="px-4 py-2.5 rounded-xl border border-gray-200 text-xs font-semibold hover:bg-gray-50"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleSaveReference}
+                disabled={savingReference || !learnName || !learnImage}
+                className="px-6 py-2.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl disabled:opacity-50 transition-all flex items-center gap-1.5"
+              >
+                <Sparkles size={14} />
+                {savingReference ? '학습 데이터 저장 중...' : 'AI 품목 학습 저장'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

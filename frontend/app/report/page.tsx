@@ -28,6 +28,7 @@ export default function AIReportPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [addForm, setAddForm] = useState({ name: '', current: '', safe: '', cycle: '월간' });
   const [adding, setAdding] = useState(false);
+  const [currentTime, setCurrentTime] = useState('');
 
   // 모달 상태
   const [selectedReportItem, setSelectedReportItem] = useState<InventoryItem | null>(null);
@@ -54,7 +55,13 @@ export default function AIReportPage() {
 
   useEffect(() => {
     fetchData();
+    const timer = setInterval(fetchData, 3000);
+    return () => clearInterval(timer);
   }, [fetchData]);
+
+  useEffect(() => {
+    setCurrentTime(new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
+  }, []);
 
   // 새 항목 추가
   const handleAdd = async () => {
@@ -133,7 +140,7 @@ export default function AIReportPage() {
           <div className="text-primary font-bold text-xs tracking-wider uppercase mb-1">
             AI INVENTORY DIAGNOSTIC REPORT
           </div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-textMain dark:text-white">
+          <h1 className="text-3xl font-bold tracking-tight text-textMain dark:text-white">
             AI 재고 상태 분석 리포트
           </h1>
         </div>
@@ -229,7 +236,7 @@ export default function AIReportPage() {
           <div className="text-blue-200 text-xs font-semibold flex items-center gap-2">
             <span>AI Real-time Diagnostic</span>
             <span>•</span>
-            <span>최종 분석 갱신: 오늘 {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}</span>
+            <span>최종 분석 갱신: 오늘 {currentTime}</span>
           </div>
           <div className="flex items-center gap-2 text-xl font-bold">
             <Lightbulb size={22} className="text-yellow-400 shrink-0" />
