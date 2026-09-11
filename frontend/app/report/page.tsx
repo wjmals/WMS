@@ -36,9 +36,9 @@ export default function AIReportPage() {
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiSummaryContent, setAiSummaryContent] = useState<string>('');
 
-  // DB에서 데이터 조회
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  // DB에서 데이터 조회 (배경 동기화 시 화면 깜빡임 방지)
+  const fetchData = useCallback(async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
     try {
       const params = new URLSearchParams();
       if (search) params.set('search', search);
@@ -54,8 +54,8 @@ export default function AIReportPage() {
   }, [search, activeFilter]);
 
   useEffect(() => {
-    fetchData();
-    const timer = setInterval(fetchData, 3000);
+    fetchData(false);
+    const timer = setInterval(() => fetchData(true), 4000);
     return () => clearInterval(timer);
   }, [fetchData]);
 
