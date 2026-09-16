@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
-import { Lock, Mail, UserCheck, ArrowRight } from 'lucide-react';
+import { Lock, Mail, UserCheck, ArrowRight, ShieldCheck, Info } from 'lucide-react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -16,7 +16,7 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
-      setError('이메일과 비밀번호를 입력해주세요.');
+      setError('아이디/이메일과 비밀번호를 입력해주세요.');
       return;
     }
     setLoading(true);
@@ -25,7 +25,7 @@ export default function LoginPage() {
       if (ok) {
         router.push('/');
       } else {
-        setError('로그인 실패: 이메일 또는 비밀번호를 확인하세요.');
+        setError('로그인 실패: 아이디 또는 비밀번호가 올바르지 않습니다.');
       }
     } catch (err) {
       setError('로그인 처리 중 오류가 발생했습니다.');
@@ -45,7 +45,7 @@ export default function LoginPage() {
             WMS 통합 물류 로그인
           </h1>
           <p className="text-sm text-textMuted mt-1">
-            서비스 이용을 위해 계정으로 로그인해주세요
+            스마트 재고 관리 및 물류 모니터링 시스템
           </p>
         </div>
 
@@ -55,19 +55,28 @@ export default function LoginPage() {
           </div>
         )}
 
+        {/* Master Admin Credentials Info Notice */}
+        <div className="mb-6 p-3.5 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/50 flex items-start gap-2.5 text-xs text-blue-800 dark:text-blue-300">
+          <ShieldCheck className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold block mb-0.5">총괄 관리자 전용 계정 안내</span>
+            아이디: <code className="font-mono bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded font-bold">wjmals</code> / 비밀번호: <code className="font-mono bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded font-bold">wjdals99!</code>
+          </div>
+        </div>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
-              이메일 주소
+              아이디 또는 이메일 주소
             </label>
             <div className="relative">
               <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
-                type="email"
+                type="text"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@company.com"
+                placeholder="wjmals 또는 name@company.com"
                 className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:bg-white dark:focus:bg-gray-900 transition-all"
               />
             </div>
@@ -103,7 +112,7 @@ export default function LoginPage() {
         <div className="mt-8 text-center text-xs text-textMuted border-t border-gray-100 dark:border-gray-800 pt-6">
           계정이 없으신가요?{' '}
           <a href="/signup" className="text-primary font-bold hover:underline ml-1">
-            회원가입하기
+            창고지기 회원가입하기
           </a>
         </div>
       </div>

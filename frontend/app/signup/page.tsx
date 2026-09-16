@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
-import { UserPlus, Mail, Lock, User, Shield, ArrowRight } from 'lucide-react';
+import { UserPlus, Mail, Lock, User, Shield, ArrowRight, Info } from 'lucide-react';
 
 export default function SignupPage() {
   const [name, setName] = useState('');
@@ -23,8 +23,10 @@ export default function SignupPage() {
     }
     setLoading(true);
     try {
-      await signup(email, password, name, role);
-      router.push('/');
+      const ok = await signup(email, password, name, role);
+      if (ok) {
+        router.push('/');
+      }
     } catch (err) {
       setError('회원가입 처리 중 오류가 발생했습니다.');
     } finally {
@@ -53,6 +55,14 @@ export default function SignupPage() {
           </div>
         )}
 
+        <div className="mb-6 p-3.5 rounded-2xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/50 flex items-start gap-2 text-xs text-amber-800 dark:text-amber-300">
+          <Info className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold block mb-0.5">승인 절차 안내</span>
+            가입 후 창고 관리자의 이메일(예: <code className="font-mono bg-white dark:bg-gray-800 px-1 rounded">wjmals</code>)로 승인 요청을 전송하시면 관리자 승인 후 창고 데이터를 관리할 수 있습니다.
+          </div>
+        </div>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
@@ -62,6 +72,7 @@ export default function SignupPage() {
               <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="text"
+                required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="홍길동"
@@ -78,6 +89,7 @@ export default function SignupPage() {
               <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="email"
+                required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@company.com"
@@ -94,6 +106,7 @@ export default function SignupPage() {
               <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="password"
+                required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -104,17 +117,17 @@ export default function SignupPage() {
 
           <div>
             <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
-              권한 / 역할 선택
+              신청 역할 구분
             </label>
             <div className="relative">
               <Shield className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <select
                 value={role}
                 onChange={(e) => setRole(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white dark:focus:bg-gray-900 transition-all appearance-none"
+                className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white dark:focus:bg-gray-900 transition-all appearance-none font-semibold"
               >
-                <option value="창고지기">창고지기 (재고 입출고 & 스캔 담당)</option>
-                <option value="관리자">총괄 관리자 (전체 기능 & 관리 권한)</option>
+                <option value="창고지기">창고지기 (관리자 승인 필요)</option>
+                <option value="관리자">관리자 계정 신청 (서버 관리자 wjmals 승인 필요)</option>
               </select>
             </div>
           </div>
@@ -124,14 +137,14 @@ export default function SignupPage() {
             disabled={loading}
             className="w-full mt-4 py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 active:scale-[0.98] transition-all disabled:opacity-50"
           >
-            {loading ? '가입 진행 중...' : '계정 만들기'}
+            {loading ? '가입 진행 중...' : '계정 신청하기'}
             <ArrowRight className="w-4 h-4" />
           </button>
         </form>
 
-        <div className="mt-8 text-center text-xs text-textMuted">
+        <div className="mt-8 text-center text-xs text-textMuted border-t border-gray-100 dark:border-gray-800 pt-6">
           이미 계정이 있으신가요?{' '}
-          <a href="/login" className="text-emerald-600 font-bold hover:underline">
+          <a href="/login" className="text-emerald-600 font-bold hover:underline ml-1">
             로그인하기
           </a>
         </div>

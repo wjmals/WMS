@@ -53,7 +53,7 @@ function getStepIndex(statusCode: string): number {
 
 export default function DeliveryManagementPage() {
   const { user } = useAuth();
-  const isAdmin = user?.role === '관리자' || user?.role === '총괄';
+  const isAdmin = user?.role === '관리자';
 
   const [deliveries, setDeliveries] = useState<DeliveryItem[]>([]);
   const [loading, setLoading] = useState(true);

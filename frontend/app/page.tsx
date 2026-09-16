@@ -30,7 +30,7 @@ type ZoneData = {
 
 export default function InventoryDashboard() {
   const { user } = useAuth();
-  const isAdmin = user?.role === '관리자' || user?.role === '총괄';
+  const isAdmin = user?.role === '관리자';
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [zones, setZones] = useState<ZoneData[]>([]);
