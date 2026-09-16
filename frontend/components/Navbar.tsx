@@ -2,14 +2,12 @@
 
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { QrCode, LogOut, Shield, Truck, Warehouse, Lock } from 'lucide-react';
+import { QrCode, LogOut, Shield, Warehouse, Lock } from 'lucide-react';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
 
   const isAdmin = user?.role === '관리자' || user?.role === '총괄';
-  const isDriver = user?.role === '운송기사';
-  const isManager = user?.role === '창고지기';
 
   return (
     <nav className="sticky top-0 z-50 w-full backdrop-blur-[20px] bg-white/70 dark:bg-black/70 border-b border-gray-200 dark:border-gray-800">
@@ -21,38 +19,25 @@ export default function Navbar() {
 
         {user ? (
           <div className="flex items-center gap-5 text-sm font-semibold text-textMuted">
-            {/* Nav links visible only for logged-in users according to role */}
+            {/* Nav links visible for authenticated users */}
             <a href="/barcode" className="hover:text-primary transition-colors flex items-center gap-1.5 text-primary font-bold">
               <QrCode className="w-4 h-4" />
               바코드 스캔
             </a>
 
-            {(isAdmin || isDriver) && (
-              <a href="/delivery" className="hover:text-primary transition-colors">배송 관리</a>
-            )}
-
-            {(isAdmin || isManager) && (
-              <a href="/" className="hover:text-primary transition-colors">재고 현황</a>
-            )}
-
-            {(isAdmin || isManager) && (
-              <a href="/report" className="hover:text-primary transition-colors">AI 리포트</a>
-            )}
-
-            {(isAdmin || isManager) && (
-              <a href="/monitor" className="hover:text-red-500 transition-colors flex items-center gap-1.5 text-red-500 font-bold">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
-                실시간 모니터링
-              </a>
-            )}
+            <a href="/delivery" className="hover:text-primary transition-colors">배송 관리</a>
+            <a href="/" className="hover:text-primary transition-colors">재고 현황</a>
+            <a href="/report" className="hover:text-primary transition-colors">AI 리포트</a>
+            <a href="/monitor" className="hover:text-red-500 transition-colors flex items-center gap-1.5 text-red-500 font-bold">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+              실시간 모니터링
+            </a>
 
             {/* User Profile & Logout */}
             <div className="border-l border-gray-200 dark:border-gray-700 pl-4 ml-1 flex items-center gap-3">
               <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-xl">
                 {isAdmin ? (
                   <Shield className="w-3.5 h-3.5 text-blue-500" />
-                ) : isDriver ? (
-                  <Truck className="w-3.5 h-3.5 text-purple-500" />
                 ) : (
                   <Warehouse className="w-3.5 h-3.5 text-emerald-500" />
                 )}

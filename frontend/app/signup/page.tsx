@@ -113,9 +113,8 @@ export default function SignupPage() {
                 onChange={(e) => setRole(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white dark:focus:bg-gray-900 transition-all appearance-none"
               >
-                <option value="창고지기">창고지기 (재고 관리자)</option>
-                <option value="관리자">총괄 관리자 (전체 접근)</option>
-                <option value="운송기사">운송기사 (배송/입출고 담당)</option>
+                <option value="창고지기">창고지기 (재고 입출고 & 스캔 담당)</option>
+                <option value="관리자">총괄 관리자 (전체 기능 & 관리 권한)</option>
               </select>
             </div>
           </div>
