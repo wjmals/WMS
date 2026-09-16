@@ -1,0 +1,12 @@
+{
+  "name": "wms-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "cd frontend && npm run build",
+    "dev": "cd frontend && npm run dev"
+  },
+  "dependencies": {
+    "next": "14.0.3"
+  }
+}
