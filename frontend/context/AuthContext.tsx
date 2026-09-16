@@ -45,6 +45,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       const parsed: User = JSON.parse(savedUser);
+      // 로컬 스토리지 데이터로 우선 빠른 복원
+      setUser(parsed);
+      setIsLoading(false);
+
+      // 백그라운드에서 최신 정보 동기화
       const res = await fetch(`/api/users?action=get_user&email=${encodeURIComponent(parsed.email)}`);
       if (res.ok) {
         const dbUser = await res.json();
@@ -60,8 +65,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         };
         setUser(updated);
         localStorage.setItem('wms_auth_user', JSON.stringify(updated));
-      } else {
-        setUser(parsed);
       }
     } catch (e) {
       console.error('Failed to refresh user', e);
@@ -71,6 +74,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   useEffect(() => {
+    // 초기 마운트 시 localStorage에서 유저 복원
+    const savedUser = localStorage.getItem('wms_auth_user');
+    if (savedUser) {
+      try {
+        setUser(JSON.parse(savedUser));
+      } catch (e) {}
+    }
+    setIsLoading(false);
     refreshUser();
   }, [refreshUser]);
 
