@@ -55,14 +55,7 @@ export default function LoginPage() {
           </div>
         )}
 
-        {/* Master Admin Credentials Info Notice */}
-        <div className="mb-6 p-3.5 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/50 flex items-start gap-2.5 text-xs text-blue-800 dark:text-blue-300">
-          <ShieldCheck className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
-          <div>
-            <span className="font-bold block mb-0.5">총괄 관리자 전용 계정 안내</span>
-            아이디: <code className="font-mono bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded font-bold">wjmals</code> / 비밀번호: <code className="font-mono bg-white dark:bg-gray-800 px-1.5 py-0.5 rounded font-bold">wjdals99!</code>
-          </div>
-        </div>
+
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

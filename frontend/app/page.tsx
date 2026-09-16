@@ -5,9 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import {
   AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck,
-  Warehouse, Settings, X, Edit2, QrCode, Camera, Lock, UserCheck, Sparkles, Barcode
+  Warehouse, Settings, X, Edit2, Camera, UserCheck, Sparkles, Barcode
 } from 'lucide-react';
-import Link from 'next/link';
 
 import { useAuth } from '../context/AuthContext';
 
@@ -95,28 +94,20 @@ export default function InventoryDashboard() {
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-4 pt-2">
-            <Link
+            <a
               href="/login"
-              className="px-8 py-4 bg-primary hover:bg-blue-600 text-white rounded-2xl font-bold text-sm shadow-lg shadow-blue-500/25 flex items-center gap-2 transition-all active:scale-95"
+              className="px-8 py-4 bg-primary hover:bg-blue-600 text-white rounded-2xl font-bold text-sm shadow-lg shadow-blue-500/25 flex items-center gap-2 transition-all active:scale-95 cursor-pointer"
             >
               로그인하고 접속하기
               <ArrowRight className="w-4 h-4" />
-            </Link>
+            </a>
 
-            <Link
+            <a
               href="/signup"
-              className="px-8 py-4 bg-white dark:bg-gray-800 hover:bg-gray-100 text-gray-900 dark:text-white border border-gray-200 dark:border-gray-700 rounded-2xl font-bold text-sm transition-all"
+              className="px-8 py-4 bg-white dark:bg-gray-800 hover:bg-gray-100 text-gray-900 dark:text-white border border-gray-200 dark:border-gray-700 rounded-2xl font-bold text-sm transition-all cursor-pointer"
             >
               창고지기 회원가입
-            </Link>
-          </div>
-
-          {/* Master Admin Info Card */}
-          <div className="mt-8 pt-6 border-t border-gray-200/60 dark:border-gray-800 max-w-md mx-auto text-xs text-textMuted flex items-center justify-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-primary flex-shrink-0" />
-            <span>
-              서버 마스터 관리자 전용 계정: <strong className="text-gray-900 dark:text-white font-mono">wjmals</strong> / 비밀번호: <strong className="text-gray-900 dark:text-white font-mono">wjdals99!</strong>
-            </span>
+            </a>
           </div>
         </section>
 
@@ -286,13 +277,13 @@ export default function InventoryDashboard() {
           </p>
         </div>
 
-        <Link
+        <a
           href="/report"
           className="flex items-center gap-2 bg-primary hover:bg-blue-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm shadow-sm transition-all"
         >
           AI 리포트 상세 분석
           <ArrowRight size={16} />
-        </Link>
+        </a>
       </header>
 
       {/* 핵심 지표 KPI 카드 (DB 실시간 연동) */}
