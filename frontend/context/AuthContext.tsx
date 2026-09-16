@@ -38,16 +38,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       } catch (e) {
         console.error('Failed to parse saved user', e);
       }
-    } else {
-      // Default to demo admin user if none exists for convenience
-      const defaultUser: User = {
-        id: 'usr_admin_01',
-        email: 'admin@wms-smartstock.ai',
-        name: '김관리 (총괄)',
-        role: '관리자',
-      };
-      setUser(defaultUser);
-      localStorage.setItem('wms_auth_user', JSON.stringify(defaultUser));
     }
     setIsLoading(false);
   }, []);
