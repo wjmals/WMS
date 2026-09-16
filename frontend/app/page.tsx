@@ -6,6 +6,8 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck, Warehouse, Settings, X, Plus, Edit2 } from 'lucide-react';
 import Link from 'next/link';
 
+import { useAuth } from '../context/AuthContext';
+
 type InventoryItem = {
   id: string;
   name: string;
@@ -27,6 +29,9 @@ type ZoneData = {
 };
 
 export default function InventoryDashboard() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === '관리자' || user?.role === '총괄';
+
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [zones, setZones] = useState<ZoneData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -232,13 +237,15 @@ export default function InventoryDashboard() {
                   <div className="flex justify-between items-start mb-2">
                     <span className="text-xs font-bold font-mono text-primary">{zone.id}</span>
                     <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => handleOpenZoneEdit(zone)}
-                        className="p-1 text-gray-400 hover:text-primary hover:bg-gray-100 rounded-lg transition-all"
-                        title="구역 및 품목 배치 설정"
-                      >
-                        <Edit2 size={13} />
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => handleOpenZoneEdit(zone)}
+                          className="p-1 text-gray-400 hover:text-primary hover:bg-gray-100 rounded-lg transition-all"
+                          title="구역 및 품목 배치 설정"
+                        >
+                          <Edit2 size={13} />
+                        </button>
+                      )}
                       <span className={`flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full ${
                         isNormal 
                           ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 

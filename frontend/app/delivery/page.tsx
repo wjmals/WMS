@@ -6,6 +6,7 @@ import {
   Clock, ArrowRight, MapPin, AlertCircle, Sparkles, ChevronRight, X, Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../../context/AuthContext';
 
 type TrackingStep = {
   time: string;
@@ -51,6 +52,9 @@ function getStepIndex(statusCode: string): number {
 }
 
 export default function DeliveryManagementPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === '관리자' || user?.role === '총괄';
+
   const [deliveries, setDeliveries] = useState<DeliveryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -496,13 +500,15 @@ export default function DeliveryManagementPage() {
                       <ChevronRight size={14} />
                     </button>
 
-                    <button
-                      onClick={() => handleDelete(item.id, item.invoice_no)}
-                      className="p-1.5 text-textMuted hover:text-red-500 hover:bg-red-50 rounded-xl text-xs transition-colors"
-                      title="배송건 삭제"
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleDelete(item.id, item.invoice_no)}
+                        className="p-1.5 text-textMuted hover:text-red-500 hover:bg-red-50 rounded-xl text-xs transition-colors"
+                        title="배송건 삭제"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
                   </div>
                 </div>
               </motion.div>

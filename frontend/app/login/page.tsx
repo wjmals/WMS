@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
-import { Lock, Mail, UserCheck, ArrowRight, ShieldCheck, Warehouse, Truck } from 'lucide-react';
+import { Lock, Mail, UserCheck, ArrowRight } from 'lucide-react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -21,22 +21,14 @@ export default function LoginPage() {
     }
     setLoading(true);
     try {
-      await login(email, password);
-      router.push('/');
+      const ok = await login(email, password);
+      if (ok) {
+        router.push('/');
+      } else {
+        setError('로그인 실패: 이메일 또는 비밀번호를 확인하세요.');
+      }
     } catch (err) {
       setError('로그인 처리 중 오류가 발생했습니다.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleQuickLogin = async (demoEmail: string) => {
-    setLoading(true);
-    try {
-      await login(demoEmail, '123456');
-      router.push('/');
-    } catch (err) {
-      setError('빠른 로그인 오류');
     } finally {
       setLoading(false);
     }
@@ -53,7 +45,7 @@ export default function LoginPage() {
             WMS 통합 물류 로그인
           </h1>
           <p className="text-sm text-textMuted mt-1">
-            스마트 재고 관리 및 물류 모니터링 시스템
+            서비스 이용을 위해 계정으로 로그인해주세요
           </p>
         </div>
 
@@ -72,6 +64,7 @@ export default function LoginPage() {
               <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="email"
+                required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@company.com"
@@ -88,6 +81,7 @@ export default function LoginPage() {
               <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="password"
+                required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -106,45 +100,9 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="relative my-6 text-center">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-gray-200 dark:border-gray-800"></div>
-          </div>
-          <span className="relative px-3 bg-white dark:bg-gray-900 text-xs text-textMuted">
-            테스트 계정 바로 접속
-          </span>
-        </div>
-
-        <div className="grid grid-cols-3 gap-2">
-          <button
-            type="button"
-            onClick={() => handleQuickLogin('admin@wms.com')}
-            className="flex flex-col items-center justify-center p-3 rounded-xl bg-gray-50 dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 border border-gray-100 dark:border-gray-700 transition-all group"
-          >
-            <ShieldCheck className="w-5 h-5 text-blue-500 mb-1 group-hover:scale-110 transition-transform" />
-            <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">총괄 관리자</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => handleQuickLogin('manager@wms.com')}
-            className="flex flex-col items-center justify-center p-3 rounded-xl bg-gray-50 dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 border border-gray-100 dark:border-gray-700 transition-all group"
-          >
-            <Warehouse className="w-5 h-5 text-emerald-500 mb-1 group-hover:scale-110 transition-transform" />
-            <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">창고지기</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => handleQuickLogin('driver@wms.com')}
-            className="flex flex-col items-center justify-center p-3 rounded-xl bg-gray-50 dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 border border-gray-100 dark:border-gray-700 transition-all group"
-          >
-            <Truck className="w-5 h-5 text-purple-500 mb-1 group-hover:scale-110 transition-transform" />
-            <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">운송기사</span>
-          </button>
-        </div>
-
-        <div className="mt-8 text-center text-xs text-textMuted">
+        <div className="mt-8 text-center text-xs text-textMuted border-t border-gray-100 dark:border-gray-800 pt-6">
           계정이 없으신가요?{' '}
-          <a href="/signup" className="text-primary font-bold hover:underline">
+          <a href="/signup" className="text-primary font-bold hover:underline ml-1">
             회원가입하기
           </a>
         </div>
