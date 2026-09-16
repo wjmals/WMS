@@ -5,6 +5,7 @@ import {
   getDocs,
   addDoc,
   deleteDoc,
+  updateDoc,
   doc,
   query,
   where,
@@ -101,3 +102,59 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: '삭제 실패' }, { status: 500 });
   }
 }
+
+// PATCH /api/inventory
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { id, current, safe } = body;
+
+    if (!id || current === undefined) {
+      return NextResponse.json({ error: 'id 및 current 수량이 필요합니다.' }, { status: 400 });
+    }
+
+    // doc(db, COL, id) 또는 snap.docs에서 id / d.data().id 탐색
+    const snap = await getDocs(collection(db, COL));
+    let targetDoc = snap.docs.find(d => d.id === id || d.data().id === id);
+
+    if (!targetDoc) {
+      return NextResponse.json({ error: '해당 아이템을 찾을 수 없습니다.' }, { status: 404 });
+    }
+
+    const safeStock = safe ?? targetDoc.data().safe ?? 10000;
+    const diff = current - safeStock;
+
+    let status = 'safe';
+    let statusLabel = '안전 재고';
+    let diffText = '적정 범위 유지';
+    let recommendation = '수요 안정적 → 현 유통 계획 유지';
+
+    if (current < safeStock * 0.5) {
+      status = 'shortage';
+      statusLabel = '재고 부족';
+      diffText = `부족분: ${diff}톤`;
+      recommendation = '재고 하한선 이탈 → 즉시 추가 발주 필요';
+    } else if (current > safeStock * 2) {
+      status = 'overstock';
+      statusLabel = '재고 과다';
+      diffText = `초과분: +${diff}톤`;
+      recommendation = '창고 점유율 초과 → 프로모션 및 출하량 증대 필요';
+    }
+
+    const updateData = {
+      current,
+      status,
+      statusLabel,
+      diffText,
+      recommendation,
+      updatedAt: new Date().toISOString()
+    };
+
+    await updateDoc(doc(db, COL, targetDoc.id), updateData);
+    return NextResponse.json({ id: targetDoc.id, itemId: targetDoc.data().id, ...targetDoc.data(), ...updateData });
+  } catch (err) {
+    console.error('Firestore 재고 수정 실패:', err);
+    return NextResponse.json({ error: '수정 실패' }, { status: 500 });
+  }
+}
+
