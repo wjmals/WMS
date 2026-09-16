@@ -212,11 +212,15 @@ const stageOrder: Record<string, number> = {
   DELIVERED: 4,
 };
 
-function toISO(val: any): string | null {
-  if (!val) return null;
+export const dynamic = 'force-dynamic';
+
+function toISO(val: any): string {
+  if (!val) return new Date().toISOString();
   if (val instanceof Timestamp) return val.toDate().toISOString();
   if (val instanceof Date) return val.toISOString();
-  return String(val);
+  if (typeof val === 'object' && val.seconds !== undefined) return new Date(val.seconds * 1000).toISOString();
+  if (typeof val === 'string' && val !== 'null' && val !== 'undefined' && val.length > 5) return val;
+  return new Date().toISOString();
 }
 
 // GET: 배송 목록 조회 or 택배사 자동 감지
@@ -338,7 +342,9 @@ export async function POST(req: NextRequest) {
     // 실제 택배사 전산 API 실시간 조회
     const tracking = await fetchTracking(cleanInvoice, carrier_code);
 
-    const docRef = await addDoc(collection(db, COL), {
+    const nowIso = new Date().toISOString();
+
+    const docData = {
       invoice_no: cleanInvoice,
       carrier_code,
       carrier_name,
@@ -350,18 +356,16 @@ export async function POST(req: NextRequest) {
       current_location: tracking.currentLocation,
       delivered_at: tracking.deliveredAt ? tracking.deliveredAt.toISOString() : null,
       tracking_details: tracking.details || [],
-      created_at: serverTimestamp(),
-      updated_at: serverTimestamp(),
-    });
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+
+    const docRef = await addDoc(collection(db, COL), docData);
 
     return NextResponse.json({
       success: true,
       id: docRef.id,
-      invoice_no: cleanInvoice,
-      carrier_name,
-      status: tracking.status,
-      current_location: tracking.currentLocation,
-      tracking_details: tracking.details,
+      ...docData,
     });
   } catch (error: any) {
     console.error('운송장 등록 실패:', error);

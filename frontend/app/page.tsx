@@ -214,9 +214,6 @@ export default function InventoryDashboard() {
             </h2>
             <p className="text-xs text-textMuted mt-0.5">각 창고 구역별 보관 품목 및 온도/공실률 실시간 상태</p>
           </div>
-          <span className="text-xs text-primary font-bold bg-blue-50 dark:bg-blue-900/30 px-3 py-1.5 rounded-xl border border-blue-200">
-            DB 실시간 연동 중
-          </span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">

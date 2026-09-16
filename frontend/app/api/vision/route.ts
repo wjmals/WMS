@@ -9,6 +9,8 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
+export const dynamic = 'force-dynamic';
+
 const COL = 'item_references';
 
 // GET: 등록된 레퍼런스 이미지 목록 조회

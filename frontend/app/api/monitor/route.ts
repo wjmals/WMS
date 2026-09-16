@@ -13,7 +13,12 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+export const dynamic = 'force-dynamic';
+
+const getGroqClient = () => {
+  const apiKey = process.env.GROQ_API_KEY || 'dummy_key_for_build';
+  return new Groq({ apiKey });
+};
 const LOGS_COL = 'monitor_logs';
 const INVENTORY_COL = 'inventory_items';
 
@@ -127,7 +132,7 @@ JSON만 반환하세요.`;
       image_url: { url: 'data:image/jpeg;base64,' + base64Data }
     });
 
-    const response = await groq.chat.completions.create({
+    const response = await getGroqClient().chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
       messages: [
         {
