@@ -3,7 +3,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck, Warehouse, Settings, X, Plus, Edit2 } from 'lucide-react';
+import {
+  AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck,
+  Warehouse, Settings, X, Edit2, QrCode, Camera, Lock, UserCheck, Sparkles, Barcode
+} from 'lucide-react';
 import Link from 'next/link';
 
 import { useAuth } from '../context/AuthContext';
@@ -62,15 +65,146 @@ export default function InventoryDashboard() {
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const timer = setInterval(fetchData, 3000);
-    return () => clearInterval(timer);
-  }, [fetchData]);
+    if (user) {
+      fetchData();
+      const timer = setInterval(fetchData, 3000);
+      return () => clearInterval(timer);
+    }
+  }, [user, fetchData]);
 
   // 수요예측 필터 선택
   const [selectedChartItem, setSelectedChartItem] = useState<string>('all');
 
-  // 핵심 지표 계산
+  // 비로그인 상태일 때: 시스템 소개 & 랜딩 쇼케이스 페이지 출력
+  if (!user) {
+    return (
+      <div className="flex flex-col gap-12 font-sans pb-16 max-w-[1100px] mx-auto">
+        {/* Hero Section */}
+        <section className="text-center py-12 px-6 bg-gradient-to-b from-blue-50/80 via-white to-gray-50/50 dark:from-gray-900 dark:to-gray-950 rounded-3xl border border-blue-100/60 dark:border-gray-800 shadow-sm space-y-6">
+          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-100/80 dark:bg-blue-900/50 text-primary font-bold text-xs">
+            <Sparkles className="w-4 h-4 text-blue-500" />
+            AI Native Smart Warehouse Management System
+          </div>
+
+          <h1 className="text-4xl md:text-5xl font-black tracking-tight text-gray-900 dark:text-white leading-tight">
+            차세대 스마트 물류 & 재고 관리 플랫폼
+          </h1>
+
+          <p className="text-base md:text-lg text-textMuted max-w-2xl mx-auto leading-relaxed">
+            Groq LLaMA-4 비전 AI CCTV 관제, 스마트 바코드 스캐너, 실재고 연동 동적 공실률 산출 및 30일 시계열 AI 수급 예측 통합 솔루션입니다.
+          </p>
+
+          <div className="flex flex-wrap items-center justify-center gap-4 pt-2">
+            <Link
+              href="/login"
+              className="px-8 py-4 bg-primary hover:bg-blue-600 text-white rounded-2xl font-bold text-sm shadow-lg shadow-blue-500/25 flex items-center gap-2 transition-all active:scale-95"
+            >
+              로그인하고 접속하기
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+
+            <Link
+              href="/signup"
+              className="px-8 py-4 bg-white dark:bg-gray-800 hover:bg-gray-100 text-gray-900 dark:text-white border border-gray-200 dark:border-gray-700 rounded-2xl font-bold text-sm transition-all"
+            >
+              창고지기 회원가입
+            </Link>
+          </div>
+
+          {/* Master Admin Info Card */}
+          <div className="mt-8 pt-6 border-t border-gray-200/60 dark:border-gray-800 max-w-md mx-auto text-xs text-textMuted flex items-center justify-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-primary flex-shrink-0" />
+            <span>
+              서버 마스터 관리자 전용 계정: <strong className="text-gray-900 dark:text-white font-mono">wjmals</strong> / 비밀번호: <strong className="text-gray-900 dark:text-white font-mono">wjdals99!</strong>
+            </span>
+          </div>
+        </section>
+
+        {/* 4 Core Pillars Grid */}
+        <section className="space-y-6">
+          <div className="text-center">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+              스마트 WMS 4대 핵심 기능
+            </h2>
+            <p className="text-xs text-textMuted mt-1">현장 물류 효율성을 극대화하기 위한 지능형 핵심 모듈</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Feature 1 */}
+            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-6 shadow-sm hover:shadow-md transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/40 text-primary flex items-center justify-center font-bold">
+                <Barcode className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                1. 스마트 바코드 스캐너 & 입출고 (`/barcode`)
+              </h3>
+              <p className="text-xs text-textMuted leading-relaxed">
+                스마트폰 카메라 또는 바코드 리더기를 이용해 바코드/SKU(예: SEA-2026-001)를 스캔하고, 창고 보관 구역 위치를 조회한 후 즉시 현장에서 수량 조정(+/- 톤)이 가능합니다.
+              </p>
+            </div>
+
+            {/* Feature 2 */}
+            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-6 shadow-sm hover:shadow-md transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-purple-50 dark:bg-purple-950/40 text-purple-600 flex items-center justify-center font-bold">
+                <Camera className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                2. Groq LLaMA-4 Vision AI 실시간 관제 (`/monitor`)
+              </h3>
+              <p className="text-xs text-textMuted leading-relaxed">
+                CCTV 카메라 및 IP 카메라 스트림을 비전 AI 모델이 실시간 분석하고, 학습용 레퍼런스 이미지를 등록하여 수치 감지 시 DB 및 창고 공실률에 즉시 자동 반영합니다.
+              </p>
+            </div>
+
+            {/* Feature 3 */}
+            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-6 shadow-sm hover:shadow-md transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 flex items-center justify-center font-bold">
+                <Warehouse className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                3. 실재고 용량 연동 창고 공실률 동적 산출 (`/api/zones`)
+              </h3>
+              <p className="text-xs text-textMuted leading-relaxed">
+                창고 구역별 실제 보관 중인 품목 수량을 실시간 계산하여 공실률(0%~100%) 및 상태(정상, 과다점유, 재고부족)를 실시간 동적으로 갱신합니다.
+              </p>
+            </div>
+
+            {/* Feature 4 */}
+            <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-6 shadow-sm hover:shadow-md transition-all space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 flex items-center justify-center font-bold">
+                <ShieldCheck className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                4. 보안 가드 & 2단계 역할별 권한 제어
+              </h3>
+              <p className="text-xs text-textMuted leading-relaxed">
+                `총괄 관리자`와 `창고지기` 2단계 전용 권한 구조로 분리되어, 관리자가 창고지기 이메일을 통해 권한을 승인해준 팀원들만 동일한 창고 데이터를 안전하게 공유합니다.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* Tech Stack Summary */}
+        <section className="bg-gray-900 text-white rounded-3xl p-8 space-y-4">
+          <h3 className="text-lg font-bold text-blue-400">
+            💻 개발 기술 스택 (Tech Stack)
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs text-gray-300 font-mono">
+            <div>• Next.js 14 (App Router)</div>
+            <div>• TypeScript & React 18</div>
+            <div>• Google Firebase Firestore</div>
+            <div>• Groq LLaMA-4 Vision AI</div>
+            <div>• Tailwind CSS & Framer Motion</div>
+            <div>• Recharts 시계열 그래프</div>
+            <div>• Vercel Cloud Platform</div>
+            <div>• Multi-Tenant Isolation</div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  // 로그인 상태일 때: 실시간 재고 & 수요 예측 대시보드 출력
   const totalCurrent = items.reduce((acc, i) => acc + (i.current || 0), 0);
   const totalSafe = items.reduce((acc, i) => acc + (i.safe || 0), 0);
   const shortageItems = items.filter(i => i.status === 'shortage');
@@ -403,7 +537,7 @@ export default function InventoryDashboard() {
           </ResponsiveContainer>
         </div>
 
-        {/* AI 의사결정 권고 및 이 차트 설명 배너 */}
+        {/* AI 의사결정 권고 배너 */}
         <div className="p-4 bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl space-y-2">
           <div className="flex items-center gap-2 text-primary font-bold text-sm">
             <span className="w-2 h-2 rounded-full bg-primary animate-ping" />

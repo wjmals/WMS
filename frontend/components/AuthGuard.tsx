@@ -14,7 +14,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [submitting, setSubmitting] = useState(false);
   const [requestResult, setRequestResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const publicPaths = ['/login', '/signup'];
+  const publicPaths = ['/', '/login', '/signup'];
   const isPublicPath = publicPaths.includes(pathname);
 
   useEffect(() => {
