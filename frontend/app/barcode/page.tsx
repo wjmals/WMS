@@ -17,6 +17,7 @@ import {
   Barcode as BarcodeIcon,
   Zap
 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 
 interface InventoryItem {
   id: string;
@@ -32,6 +33,7 @@ interface InventoryItem {
 }
 
 export default function BarcodeScannerPage() {
+  const { user } = useAuth();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [barcodeInput, setBarcodeInput] = useState('');
@@ -48,7 +50,7 @@ export default function BarcodeScannerPage() {
   const fetchItems = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/inventory');
+      const res = await fetch(`/api/inventory?warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`);
       if (res.ok) {
         const data = await res.json();
         setItems(data);
@@ -65,7 +67,7 @@ export default function BarcodeScannerPage() {
 
   useEffect(() => {
     fetchItems();
-  }, []);
+  }, [user]);
 
   // Handle camera start/stop
   const startCamera = async () => {
@@ -133,7 +135,8 @@ export default function BarcodeScannerPage() {
         body: JSON.stringify({
           id: selectedItem.id,
           current: newCurrent,
-          safe: selectedItem.safe
+          safe: selectedItem.safe,
+          warehouseId: user?.warehouseId,
         }),
       });
 

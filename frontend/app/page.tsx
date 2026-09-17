@@ -70,10 +70,12 @@ export default function InventoryDashboard() {
 
   // 재고 및 구역 데이터 불러오기
   const fetchData = useCallback(async () => {
+    if (!user) return;
+    const warehouseId = encodeURIComponent(user.warehouseId || 'wh_wjmals');
     try {
       const [invRes, zoneRes] = await Promise.all([
-        fetch('/api/inventory'),
-        fetch('/api/zones')
+        fetch(`/api/inventory?warehouseId=${warehouseId}`),
+        fetch(`/api/zones?warehouseId=${warehouseId}`)
       ]);
       const invData = await invRes.json();
       const zoneData = await zoneRes.json();
@@ -85,7 +87,7 @@ export default function InventoryDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (user) {
@@ -112,6 +114,7 @@ export default function InventoryDashboard() {
           current: Number(newInvCurrent),
           safe: Number(newInvSafe),
           cycle: newInvCycle,
+          warehouseId: user?.warehouseId,
         }),
       });
       if (res.ok) {
@@ -134,7 +137,7 @@ export default function InventoryDashboard() {
   const handleDeleteInventory = async (id: string, name: string) => {
     if (!confirm(`'${name}' 재고 품목을 정말 삭제하시겠습니까?`)) return;
     try {
-      const res = await fetch(`/api/inventory?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/inventory?id=${encodeURIComponent(id)}&warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`, { method: 'DELETE' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -160,6 +163,7 @@ export default function InventoryDashboard() {
           temp: newZoneTemp,
           capacity: Number(newZoneCapacity),
           items: newZoneSelectedItems,
+          warehouseId: user?.warehouseId,
         }),
       });
       if (res.ok) {
@@ -182,7 +186,7 @@ export default function InventoryDashboard() {
   const handleDeleteZone = async (id: string, name: string) => {
     if (!confirm(`'${name}' 구역을 정말 삭제하시겠습니까?`)) return;
     try {
-      const res = await fetch(`/api/zones?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/zones?id=${encodeURIComponent(id)}&warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`, { method: 'DELETE' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -360,6 +364,7 @@ export default function InventoryDashboard() {
         body: JSON.stringify({
           ...editingZone,
           items: selectedItems,
+          warehouseId: user?.warehouseId,
         }),
       });
       setShowZoneModal(false);

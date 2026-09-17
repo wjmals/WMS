@@ -21,11 +21,17 @@ const getGroqClient = () => {
 };
 const LOGS_COL = 'monitor_logs';
 const INVENTORY_COL = 'inventory_items';
+const DEFAULT_WH_ID = 'wh_wjmals';
+
+function getWarehouseCollection(warehouseId: string, name: string) {
+  return collection(db, 'warehouses', warehouseId, name);
+}
 
 // GET: 최근 분석 이력 조회
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const warehouseId = new URL(req.url).searchParams.get('warehouseId') || DEFAULT_WH_ID;
   try {
-    const q = query(collection(db, LOGS_COL), orderBy('analyzed_at', 'desc'), limit(50));
+    const q = query(getWarehouseCollection(warehouseId, LOGS_COL), orderBy('analyzed_at', 'desc'), limit(50));
     const snap = await getDocs(q);
     const rows = snap.docs.map(doc => ({
       id: doc.id,
@@ -41,7 +47,8 @@ export async function GET() {
 // POST: 이미지 분석 + 이력 저장 + 재고 부족 시 inventory_items 업데이트
 export async function POST(req: NextRequest) {
   try {
-    const { image, itemName, cameraUrl } = await req.json();
+    const { image, itemName, cameraUrl, warehouseId: bodyWarehouseId } = await req.json();
+    const warehouseId = bodyWarehouseId || DEFAULT_WH_ID;
 
     if (!image) {
       return NextResponse.json({ error: '이미지가 없습니다.' }, { status: 400 });
@@ -52,7 +59,7 @@ export async function POST(req: NextRequest) {
     // 1. 등록된 재고 품목 목록 (텍스트 정보)
     let registeredItems: string[] = [];
     try {
-      const invSnap = await getDocs(collection(db, INVENTORY_COL));
+      const invSnap = await getDocs(getWarehouseCollection(warehouseId, INVENTORY_COL));
       registeredItems = invSnap.docs.map(d => {
         const data = d.data();
         return `- ${data.name} (현재 ${data.current}톤, 안전기준 ${data.safe}톤, 상태: ${data.statusLabel})`;
@@ -62,7 +69,7 @@ export async function POST(req: NextRequest) {
     // 2. 학습된 레퍼런스 이미지 데이터 (시각적 학습 데이터)
     let referenceList: any[] = [];
     try {
-      const refSnap = await getDocs(collection(db, 'item_references'));
+      const refSnap = await getDocs(getWarehouseCollection(warehouseId, 'item_references'));
       referenceList = refSnap.docs.map(d => d.data());
     } catch {}
 
@@ -168,7 +175,7 @@ JSON만 반환하세요.`;
     }
 
     // 분석 이력 저장
-    await addDoc(collection(db, LOGS_COL), {
+    await addDoc(getWarehouseCollection(warehouseId, LOGS_COL), {
       camera_url: cameraUrl || 'webcam',
       item_name: result.itemName,
       status: result.status,
@@ -183,7 +190,7 @@ JSON만 반환하세요.`;
     });
 
     // 분석 결과를 inventory_items에 자동 반영 (모든 상태)
-    const q = query(collection(db, INVENTORY_COL), where('name', '==', result.itemName));
+    const q = query(getWarehouseCollection(warehouseId, INVENTORY_COL), where('name', '==', result.itemName));
     const snap = await getDocs(q);
     if (!snap.empty) {
       const itemDoc = snap.docs[0];
@@ -203,7 +210,7 @@ JSON만 반환하세요.`;
       const diffText = result.status === 'shortage' ? `부족분: ${diff}톤`
         : result.status === 'overstock' ? `초과분: +${diff}톤`
         : '적정 범위 유지';
-      await addDoc(collection(db, INVENTORY_COL), {
+      await addDoc(getWarehouseCollection(warehouseId, INVENTORY_COL), {
         name: result.itemName,
         current: result.estimatedQuantity,
         safe,

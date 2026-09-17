@@ -102,6 +102,13 @@ async function getAllUsersList(): Promise<any[]> {
   return localList;
 }
 
+async function updateFirestoreUser(email: string, updates: Record<string, any>) {
+  const snap = await withTimeout(getDocs(query(collection(db, USERS_COL), where('email', '==', email))));
+  if (snap && !snap.empty) {
+    await updateDoc(doc(db, USERS_COL, snap.docs[0].id), updates);
+  }
+}
+
 // GET /api/users?action=...
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -228,8 +235,9 @@ export async function POST(req: NextRequest) {
         writeLocalUsers(allUsers);
       }
 
-      // Firestore update
-      withTimeout(addDoc(collection(db, REQUESTS_COL), {
+      // 사용자 관계 정보와 승인 요청을 모두 Firestore에 기록
+      await updateFirestoreUser(email, { requestedAdminEmail: normalizedAdminEmail });
+      await withTimeout(addDoc(collection(db, REQUESTS_COL), {
         userEmail: email,
         userName: name || email.split('@')[0],
         adminEmail: normalizedAdminEmail,
@@ -259,17 +267,26 @@ export async function POST(req: NextRequest) {
         writeLocalUsers(allUsers);
       }
 
-      // Update Firestore async
-      withTimeout(getDocs(query(collection(db, USERS_COL), where('email', '==', targetEmail)))).then(snap => {
-        if (snap && !snap.empty) {
-          updateDoc(doc(db, USERS_COL, snap.docs[0].id), {
-            status: 'APPROVED',
-            adminEmail,
-            warehouseId,
-            approvedAt: new Date().toISOString(),
-          });
-        }
+      await updateFirestoreUser(targetEmail, {
+        status: 'APPROVED',
+        adminEmail,
+        warehouseId,
+        approvedAt: new Date().toISOString(),
+        requestedAdminEmail: null,
       });
+
+      if (requestId) {
+        await deleteDoc(doc(db, REQUESTS_COL, requestId));
+      } else {
+        const requestSnap = await withTimeout(getDocs(query(
+          collection(db, REQUESTS_COL),
+          where('userEmail', '==', targetEmail),
+          where('status', '==', 'PENDING')
+        )));
+        if (requestSnap) {
+          await Promise.all(requestSnap.docs.map(request => deleteDoc(request.ref)));
+        }
+      }
 
       return NextResponse.json({ success: true, targetEmail, warehouseId });
     }

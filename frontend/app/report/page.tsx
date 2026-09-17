@@ -6,6 +6,7 @@ import {
   Wand2, Plus, Trash2, RefreshCw, X, Printer, Download, Sparkles, TrendingDown, TrendingUp
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../../context/AuthContext';
 
 type InventoryItem = {
   id: string;
@@ -21,6 +22,7 @@ type InventoryItem = {
 };
 
 export default function AIReportPage() {
+  const { user } = useAuth();
   const [data, setData] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState('전체');
@@ -41,6 +43,7 @@ export default function AIReportPage() {
     if (!isSilent) setLoading(true);
     try {
       const params = new URLSearchParams();
+      params.set('warehouseId', user?.warehouseId || 'wh_wjmals');
       if (search) params.set('search', search);
       if (activeFilter !== '전체') params.set('status', activeFilter);
       const res = await fetch(`/api/inventory?${params.toString()}`);
@@ -51,7 +54,7 @@ export default function AIReportPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, activeFilter]);
+  }, [search, activeFilter, user]);
 
   useEffect(() => {
     fetchData(false);
@@ -76,6 +79,7 @@ export default function AIReportPage() {
           current: Number(addForm.current),
           safe: Number(addForm.safe),
           cycle: addForm.cycle,
+          warehouseId: user?.warehouseId,
         }),
       });
       if (!res.ok) {
@@ -96,7 +100,7 @@ export default function AIReportPage() {
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`[${name} / ${id}] 항목을 삭제하시겠습니까?`)) return;
     try {
-      const res = await fetch(`/api/inventory?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/inventory?id=${encodeURIComponent(id)}&warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`, { method: 'DELETE' });
       if (!res.ok) {
         const errorData = await res.json().catch(() => null);
         throw new Error(errorData?.error || '삭제 실패');
