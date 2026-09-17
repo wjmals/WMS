@@ -7,6 +7,7 @@ import {
   Plus, Trash2, Upload, X, BookOpen
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '../../context/AuthContext';
 
 type AnalysisLog = {
   id: number;
@@ -67,6 +68,7 @@ const INTERVALS = [
 
 export default function MonitorPage() {
   const router = useRouter();
+  const { user } = useAuth();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -97,20 +99,21 @@ export default function MonitorPage() {
   // 이력 불러오기
   const fetchLogs = useCallback(async () => {
     try {
-      const res = await fetch('/api/monitor');
+      const res = await fetch(`/api/monitor?warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`);
       const data = await res.json();
       setLogs(Array.isArray(data) ? data : []);
     } catch {}
-  }, []);
+  }, [user]);
 
   // 학습 데이터(레퍼런스 이미지) 불러오기
   const fetchReferences = useCallback(async () => {
     try {
-      const res = await fetch('/api/vision');
+      const res = await fetch(`/api/vision?warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`);
+      if (!res.ok) return;
       const data = await res.json();
-      setReferences(Array.isArray(data) ? data : []);
+      if (Array.isArray(data)) setReferences(data);
     } catch {}
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     fetchLogs();
@@ -158,6 +161,7 @@ export default function MonitorPage() {
           name: referenceName,
           description: learnDesc,
           image: learnImage,
+          warehouseId: user?.warehouseId,
         }),
       });
       if (!res.ok) {
@@ -181,9 +185,12 @@ export default function MonitorPage() {
   const handleDeleteReference = async (id: string, name: string) => {
     if (!confirm(`[${name}] 학습 레퍼런스를 삭제하시겠습니까?`)) return;
     try {
-      await fetch(`/api/vision?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/vision?id=${id}&warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('학습 데이터 삭제에 실패했습니다.');
       await fetchReferences();
-    } catch {}
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '학습 데이터 삭제에 실패했습니다.');
+    }
   };
 
   // 카메라 시작
@@ -269,6 +276,7 @@ export default function MonitorPage() {
           image: imageData,
           itemName,
           cameraUrl: cameraMode === 'ip' ? ipUrl : 'webcam',
+          warehouseId: user?.warehouseId,
         }),
       });
       if (!res.ok) throw new Error('분석 실패');
