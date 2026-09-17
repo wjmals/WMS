@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { ShieldCheck, UserPlus, CheckCircle, Clock, Users, X, RefreshCw, Warehouse, Mail, UserCheck } from 'lucide-react';
+import { ShieldCheck, UserPlus, CheckCircle, Clock, Users, X, RefreshCw, Warehouse, Mail, UserCheck, Trash2 } from 'lucide-react';
 
 interface PendingRequest {
   id: string;
@@ -27,7 +27,7 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const fetchMembers = useCallback(async () => {
-    if (!user || (user.role !== '관리자' && user.role !== '총괄')) return;
+    if (!user || (user.role !== '서버 관리자' && user.role !== '관리자' && user.role !== '총괄')) return;
     try {
       setLoading(true);
       const res = await fetch(`/api/users?action=list_requests&adminEmail=${encodeURIComponent(user.email)}`);
@@ -49,8 +49,12 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
     }
   }, [isOpen, fetchMembers]);
 
-  // 창고지기 승인 처리
+  // 창고지기 승인 처리 (Confirm 추가)
   const handleApprove = async (targetEmail: string, requestId?: string) => {
+    if (!confirm(`'${targetEmail}' 계정을 창고지기로 정말 승인하시겠습니까?`)) {
+      return;
+    }
+
     try {
       setLoading(true);
       const res = await fetch('/api/users', {
@@ -77,10 +81,15 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
     }
   };
 
-  // 관리자가 창고지기 이메일 직접 입력하여 추가 & 승인
+  // 관리자가 창고지기 이메일 직접 입력하여 추가 & 승인 (Confirm 추가)
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail) return;
+
+    if (!confirm(`'${inviteEmail}' 이메일을 이 창고의 창고지기로 정말 추가하시겠습니까?`)) {
+      return;
+    }
+
     try {
       setLoading(true);
       const res = await fetch('/api/users', {
@@ -108,10 +117,40 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
     }
   };
 
+  // 창고지기 등록 해제 / 계정 삭제
+  const handleRemoveKeeper = async (targetEmail: string) => {
+    if (!confirm(`'${targetEmail}' 창고지기를 이 창고에서 정말 등록 해제/삭제하시겠습니까?`)) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete_user',
+          targetEmail,
+        }),
+      });
+
+      if (res.ok) {
+        setActionMsg({ type: 'success', text: `'${targetEmail}' 창고지기가 삭제 처리되었습니다.` });
+        await fetchMembers();
+      } else {
+        alert('삭제 실패');
+      }
+    } catch (e) {
+      alert('오류 발생');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 font-sans">
       <div className="bg-white dark:bg-gray-900 rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-6 max-h-[90vh] overflow-y-auto">
         
         {/* Header */}
@@ -125,7 +164,7 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
                 창고 관리자 권한 및 멤버 관리 콘솔
               </h3>
               <p className="text-xs text-textMuted mt-0.5">
-                담당 창고지기 승인 및 이메일 직접 등록 관리
+                담당 창고지기 승인, 등록 해제 및 이메일 직접 등록 관리
               </p>
             </div>
           </div>
@@ -219,7 +258,7 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
           )}
         </div>
 
-        {/* 3. 소속 창고지기 목록 */}
+        {/* 3. 소속 창고지기 목록 및 등록 해제 */}
         <div className="space-y-3 pt-2">
           <h4 className="text-xs font-bold uppercase text-gray-700 dark:text-gray-300 flex items-center gap-2">
             <Warehouse className="w-4 h-4 text-emerald-500" />
@@ -233,14 +272,25 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {teamMembers.map((m) => (
-                <div key={m.id} className="p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex items-center gap-3">
-                  <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs">
-                    W
+                <div key={m.id} className="p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs">
+                      W
+                    </div>
+                    <div>
+                      <span className="font-bold text-xs text-gray-900 dark:text-white block">{m.name}</span>
+                      <span className="text-[11px] text-textMuted font-mono">{m.email}</span>
+                    </div>
                   </div>
-                  <div>
-                    <span className="font-bold text-xs text-gray-900 dark:text-white block">{m.name}</span>
-                    <span className="text-[11px] text-textMuted">{m.email}</span>
-                  </div>
+
+                  <button
+                    onClick={() => handleRemoveKeeper(m.email)}
+                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-all text-xs font-bold flex items-center gap-1"
+                    title="등록 해제"
+                  >
+                    <Trash2 size={13} />
+                    해제
+                  </button>
                 </div>
               ))}
             </div>

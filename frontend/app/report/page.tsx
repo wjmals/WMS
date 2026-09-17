@@ -67,27 +67,44 @@ export default function AIReportPage() {
   const handleAdd = async () => {
     if (!addForm.name || !addForm.current || !addForm.safe) return;
     setAdding(true);
-    await fetch('/api/inventory', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: addForm.name,
-        current: Number(addForm.current),
-        safe: Number(addForm.safe),
-        cycle: addForm.cycle,
-      }),
-    });
-    setAddForm({ name: '', current: '', safe: '', cycle: '월간' });
-    setShowAddForm(false);
-    setAdding(false);
-    fetchData();
+    try {
+      const res = await fetch('/api/inventory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: addForm.name,
+          current: Number(addForm.current),
+          safe: Number(addForm.safe),
+          cycle: addForm.cycle,
+        }),
+      });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.error || '재고 항목 추가에 실패했습니다.');
+      }
+      setAddForm({ name: '', current: '', safe: '', cycle: '월간' });
+      setShowAddForm(false);
+      await fetchData();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '재고 항목 추가 중 오류가 발생했습니다.');
+    } finally {
+      setAdding(false);
+    }
   };
 
   // 항목 삭제
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`[${name} / ${id}] 항목을 삭제하시겠습니까?`)) return;
-    await fetch(`/api/inventory?id=${id}`, { method: 'DELETE' });
-    fetchData();
+    try {
+      const res = await fetch(`/api/inventory?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.error || '삭제 실패');
+      }
+      await fetchData();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '삭제 중 오류가 발생했습니다.');
+    }
   };
 
   // AI 전체 리포트 생성
@@ -340,7 +357,7 @@ export default function AIReportPage() {
                     AI 진단 권고사항
                   </div>
                   <div className="text-sm font-semibold text-textMain dark:text-gray-200 break-keep leading-relaxed">
-                    {item.recommendation.split('→').map((part, i, arr) => (
+                    {(item.recommendation || '재고 상태를 확인하고 현 유통 계획을 검토하세요.').split('→').map((part, i, arr) => (
                       <span key={i}>
                         {part.trim()}
                         {i < arr.length - 1 && <span className="text-primary font-bold mx-1.5">➔</span>}

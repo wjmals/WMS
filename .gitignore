@@ -20,6 +20,8 @@ serviceAccountKey.json
 *.sqlite
 *.sqlite3
 *.bak
+frontend/data/users.json
+*.tsbuildinfo
 
 # Python
 __pycache__/

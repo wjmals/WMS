@@ -6,7 +6,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: '관리자' | '창고지기' | string;
+  role: '서버 관리자' | '관리자' | '창고지기' | string;
   status: 'APPROVED' | 'PENDING_ADMIN' | 'PENDING_WAREHOUSE';
   warehouseId?: string;
   adminEmail?: string;

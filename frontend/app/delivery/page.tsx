@@ -151,9 +151,12 @@ export default function DeliveryManagementPage() {
         setReceiverInput('');
         setShowAddModal(false);
         fetchDeliveries(false);
+      } else {
+        const errorData = await res.json().catch(() => null);
+        alert(errorData?.error || '운송장 등록에 실패했습니다.');
       }
     } catch (err) {
-      alert('등록 중 오류 발생');
+      alert(err instanceof Error ? err.message : '등록 중 오류 발생');
     } finally {
       setSubmitting(false);
     }
@@ -164,10 +167,14 @@ export default function DeliveryManagementPage() {
     if (!confirm(`운송장 [${invoiceNo}] 배송건을 목록에서 삭제하시겠습니까?`)) return;
     setDeliveries(prev => prev.filter(item => item.id !== id));
     try {
-      await fetch(`/api/delivery?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/delivery?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error('삭제 실패');
+      }
       fetchDeliveries(false);
     } catch (e) {
-      alert('삭제 실패');
+      alert(e instanceof Error ? e.message : '삭제 실패');
+      fetchDeliveries(false);
     }
   };
 

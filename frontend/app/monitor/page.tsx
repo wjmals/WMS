@@ -148,25 +148,30 @@ export default function MonitorPage() {
       alert('품목명과 이미지를 모두 지정해주세요.');
       return;
     }
+    const referenceName = learnName;
     setSavingReference(true);
     try {
-      await fetch('/api/vision', {
+      const res = await fetch('/api/vision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: learnName,
+          name: referenceName,
           description: learnDesc,
           image: learnImage,
         }),
       });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => null);
+        throw new Error(errorData?.error || '학습 등록에 실패했습니다.');
+      }
       setLearnName('');
       setLearnDesc('');
       setLearnImage(null);
       setShowLearnModal(false);
       await fetchReferences();
-      alert(`[${learnName}] 품목 학습 이미지가 등록되었습니다.`);
+      alert(`[${referenceName}] 품목 학습 이미지가 등록되었습니다.`);
     } catch (e) {
-      alert('학습 등록 중 오류가 발생했습니다.');
+      alert(e instanceof Error ? e.message : '학습 등록 중 오류가 발생했습니다.');
     } finally {
       setSavingReference(false);
     }
@@ -183,6 +188,28 @@ export default function MonitorPage() {
 
   // 카메라 시작
   const startWebcam = useCallback(async () => {
+    if (cameraMode === 'ip') {
+      const streamUrl = ipUrl.trim();
+      if (!streamUrl || !videoRef.current) {
+        alert('IP 카메라 스트림 주소를 입력해주세요.');
+        return false;
+      }
+
+      try {
+        const video = videoRef.current;
+        video.srcObject = null;
+        video.src = streamUrl;
+        video.load();
+        await video.play();
+        setCameraReady(true);
+        return true;
+      } catch {
+        setCameraReady(false);
+        alert('IP 카메라 스트림을 재생할 수 없습니다. 주소와 브라우저 호환성을 확인해주세요.');
+        return false;
+      }
+    }
+
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -193,16 +220,25 @@ export default function MonitorPage() {
         videoRef.current.srcObject = mediaStream;
       }
       setCameraReady(true);
+      return true;
     } catch {
+      setCameraReady(false);
       alert('카메라 권한을 허용해주세요.');
+      return false;
     }
-  }, []);
+  }, [cameraMode, ipUrl]);
 
   // 카메라 중지
   const stopWebcam = useCallback(() => {
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());
       setStream(null);
+    }
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+      videoRef.current.removeAttribute('src');
+      videoRef.current.load();
     }
     setCameraReady(false);
   }, [stream]);
@@ -273,7 +309,8 @@ export default function MonitorPage() {
 
   // 모니터링 시작
   const startMonitoring = useCallback(async () => {
-    await startWebcam();
+    const started = await startWebcam();
+    if (!started) return;
     setShowSettings(false);
     setIsMonitoring(true);
   }, [startWebcam]);

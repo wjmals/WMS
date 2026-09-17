@@ -49,7 +49,7 @@ async function detectCarrierAuto(invoiceNo: string): Promise<{ code: string; nam
 
   if (tKey && clean.length >= 9) {
     try {
-      const res = await fetch(`http://info.sweettracker.co.kr/api/v1/recommend/companylist?t_key=${tKey}&t_invoice=${clean}`);
+      const res = await fetchWithTimeout(`http://info.sweettracker.co.kr/api/v1/recommend/companylist?t_key=${tKey}&t_invoice=${clean}`);
       if (res.ok) {
         const data = await res.json();
         if (data.Company && data.Company.length > 0) {
@@ -96,7 +96,7 @@ async function fetchTracking(invoiceNo: string, carrierCode: string) {
   // 1. 스마트택배 API 키가 있는 경우 우선 조회
   if (tKey) {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `http://info.sweettracker.co.kr/api/v1/trackingInfo?t_key=${tKey}&t_code=${carrierCode}&t_invoice=${invoiceNo}`
       );
       if (res.ok) {
@@ -132,7 +132,7 @@ async function fetchTracking(invoiceNo: string, carrierCode: string) {
   // 2. 무료 오픈 배송 조회 API (apis.tracker.delivery) 실시간 조회
   const trackerCarrierId = TRACKER_DELIVERY_IDS[carrierCode] || 'kr.cjlogistics';
   try {
-    const res = await fetch(`https://apis.tracker.delivery/carriers/${trackerCarrierId}/tracks/${invoiceNo}`, {
+    const res = await fetchWithTimeout(`https://apis.tracker.delivery/carriers/${trackerCarrierId}/tracks/${invoiceNo}`, {
       headers: { 'Accept': 'application/json' },
       next: { revalidate: 30 },
     });
@@ -211,6 +211,16 @@ const stageOrder: Record<string, number> = {
   OUT_FOR_DELIVERY: 3,
   DELIVERED: 4,
 };
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export const dynamic = 'force-dynamic';
 
