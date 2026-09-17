@@ -146,6 +146,23 @@ export async function GET(req: NextRequest) {
       if (reqSnap) {
         pendingRequests = reqSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       }
+
+      // Signup stores the requested manager on the user record. Include those
+      // users even when the separate access-request document was not created.
+      const pendingByUser = allUsers
+        .filter(u => u.adminEmail === adminEmail && u.status === 'PENDING_WAREHOUSE')
+        .map(u => ({
+          id: `user-${u.email}`,
+          userEmail: u.email,
+          userName: u.name || u.email.split('@')[0],
+          adminEmail,
+          status: 'PENDING',
+          requestedAt: u.createdAt || new Date().toISOString(),
+        }));
+      const existingEmails = new Set(pendingRequests.map(request => request.userEmail));
+      pendingRequests = pendingRequests.concat(
+        pendingByUser.filter(request => !existingEmails.has(request.userEmail))
+      );
       return NextResponse.json({ pendingRequests, teamMembers });
     }
 
