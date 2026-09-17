@@ -4,6 +4,11 @@ import * as admin from "firebase-admin";
 
 const db = admin.firestore();
 const fcm = admin.messaging();
+const DEFAULT_WAREHOUSE_ID = "wh_wjmals";
+
+function inventoryCollection(warehouseId: string) {
+    return db.collection("warehouses").doc(warehouseId).collection("inventory_items");
+}
 
 // 1. Demand Forecast & Auto Reorder Alert (Cron Job)
 // Runs daily at midnight Asia/Seoul
@@ -18,7 +23,7 @@ export const checkInventoryDemand = onSchedule({
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         
-        const itemsSnap = await db.collection("inventory_items").get();
+        const itemsSnap = await inventoryCollection(DEFAULT_WAREHOUSE_ID).get();
         
         for (const doc of itemsSnap.docs) {
             const item = doc.data();
@@ -26,7 +31,7 @@ export const checkInventoryDemand = onSchedule({
             const leadTime = item.leadTime || 7; // Default 7 days
             
             // Fetch history
-            const historySnap = await db.collection(`inventory_items/${itemId}/history`)
+            const historySnap = await inventoryCollection(DEFAULT_WAREHOUSE_ID).doc(itemId).collection("history")
                 .where("date", ">=", thirtyDaysAgo)
                 .orderBy("date", "asc")
                 .get();
@@ -60,7 +65,7 @@ export const checkInventoryDemand = onSchedule({
             const m = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX) || 0;
             
             // Predict depletion date based on current stock
-            const currentStock = item.currentStock || 0;
+            const currentStock = item.current || 0;
             const projectedDailyConsumption = Math.max(avgConsumption + m * 5, 0.1); // Avoid div by 0
             
             const daysUntilDepletion = currentStock / projectedDailyConsumption;
@@ -77,7 +82,7 @@ export const checkInventoryDemand = onSchedule({
                 });
                 
                 // Mark alert sent
-                await db.collection("inventory_items").doc(itemId).update({
+                await inventoryCollection(DEFAULT_WAREHOUSE_ID).doc(itemId).update({
                     reorderAlertSent: true,
                     daysUntilDepletion: Math.round(daysUntilDepletion)
                 });

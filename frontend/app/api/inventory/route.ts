@@ -10,17 +10,13 @@ import {
   setDoc,
   serverTimestamp,
 } from 'firebase/firestore';
+import seedInventory from '../../../data/inventory.json';
 
 export const dynamic = 'force-dynamic';
 
 const DEFAULT_WH_ID = 'wh_wjmals';
 
-const defaultInventory = [
-  { id: 'SEA-2026-001', name: '고등어(식용)', current: 12000, safe: 8000, status: 'safe', statusLabel: '안전 재고', diffText: '적정 범위 유지', cycle: '월간', date: '2026-09-10' },
-  { id: 'SEA-2026-002', name: '명태', current: 15000, safe: 10000, status: 'safe', statusLabel: '안전 재고', diffText: '적정 범위 유지', cycle: '월간', date: '2026-09-10' },
-  { id: 'SEA-2026-003', name: '갈치(국내산)', current: 4757, safe: 8000, status: 'shortage', statusLabel: '재고 부족', diffText: '부족분: -3243톤', cycle: '월간', date: '2026-09-10' },
-  { id: 'SEA-2026-004', name: '조기', current: 9000, safe: 7000, status: 'safe', statusLabel: '안전 재고', diffText: '적정 범위 유지', cycle: '월간', date: '2026-09-10' },
-];
+const defaultInventory = seedInventory;
 
 function getSubCol(whId: string) {
   return collection(db, 'warehouses', whId, 'inventory_items');

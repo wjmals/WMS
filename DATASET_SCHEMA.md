@@ -227,13 +227,12 @@ warehouses/{warehouseId}/monitor_logs/{logId}
 
 상태가 `normal`에서 `low` 또는 `empty`로 바뀌면 Firebase Functions가 `admin_alerts` FCM 토픽으로 알림을 보내고, Firestore `inventory_alerts`에 기록합니다.
 
-## 5. Firebase Functions의 별도 스키마
+## 5. Firebase Functions 수요 예측 스키마
 
-`backend/functions/src/inventory/index.ts`에는 웹 API와 다른 레거시/예정 구조가 존재합니다.
+`backend/functions/src/inventory/index.ts`도 웹 API와 같은 창고별 재고 컬렉션을 사용합니다.
 
 ```text
-inventory_items/{itemId}
-history/{historyId}
+warehouses/{warehouseId}/inventory_items/{itemId}/history/{historyId}
 ```
 
 ### `history` 문서
@@ -243,9 +242,9 @@ history/{historyId}
 | `date` | timestamp/date | 소비 기록 날짜 |
 | `consumed` | number | 해당 날짜 소비량 |
 
-함수는 최근 30일의 `consumed` 값을 이용해 평균 소비량과 선형 추세를 계산하고, `currentStock`, `leadTime`, `reorderAlertSent`, `daysUntilDepletion` 필드를 사용합니다.
+함수는 최근 30일의 `consumed` 값을 이용해 평균 소비량과 선형 추세를 계산하고, 재고 문서의 `current`, `leadTime`, `reorderAlertSent`, `daysUntilDepletion` 필드를 사용합니다.
 
-현재 웹 API는 창고별 `warehouses/{warehouseId}/inventory_items`를 사용하므로, 이 Functions 경로와는 데이터 위치가 다릅니다. 실제 운영에서 수요 예측 함수를 사용할 경우 두 스키마 중 하나로 통일해야 합니다.
+현재 기본 Functions 실행 대상은 `wh_wjmals`입니다. 다른 창고를 지원할 때는 함수 입력 또는 스케줄 설정에서 `warehouseId` 범위를 명시해야 합니다.
 
 ## 6. 데이터 관계
 
@@ -260,10 +259,9 @@ warehouse_zones + inventory_items -> currentStockSum/emptyRatio 계산
 
 ## 7. 현재 구조의 주의사항
 
-1. `frontend/data/inventory.json`의 샘플 값과 `frontend/app/api/inventory/route.ts`의 기본값이 일부 다릅니다. 초기화 기준을 하나로 정하는 것이 좋습니다.
+1. `frontend/app/api/inventory/route.ts`는 `frontend/data/inventory.json`을 초기화 기준으로 사용합니다.
 2. 사용자 비밀번호가 JSON과 Firestore에 평문으로 저장됩니다. 상용 서비스에서는 반드시 해시 기반 인증으로 교체해야 합니다.
-3. 웹 API의 Firestore 경로와 Firebase Functions의 재고 경로가 다릅니다.
-4. Python CV 클라이언트는 Realtime Database를 사용하고, 웹 모니터링 API는 Firestore를 사용합니다.
+3. Python CV 클라이언트는 카메라 텔레메트리 전용으로 Realtime Database를 사용하고, 웹 모니터링 API는 분석 결과와 재고를 Firestore에 저장합니다. 서로 다른 데이터 종류이므로 분리되어 있습니다.
 5. `warehouse_zones.items`가 품목 ID가 아닌 품목명으로 연결됩니다. 품목명 변경 시 구역 연결이 끊길 수 있으므로 운영 데이터에서는 품목 ID 참조가 더 안전합니다.
 6. base64 이미지와 CCTV 데이터는 크기가 커질 수 있으므로 보관 기간, 접근 권한, 삭제 정책을 별도로 두어야 합니다.
 7. Firestore timestamp와 ISO 문자열 필드가 혼용되어 있습니다. 날짜 필드 형식을 통일하는 것이 좋습니다.
