@@ -13,6 +13,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [adminEmailInput, setAdminEmailInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [requestResult, setRequestResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const pendingAdminEmail = user?.requestedAdminEmail || user?.adminEmail;
 
   const publicPaths = ['/', '/login', '/signup'];
   const isPublicPath = publicPaths.includes(pathname);
@@ -93,7 +94,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   // 2. 창고지기 가입 후 창고 승인 대기 중 (PENDING_WAREHOUSE)
-  if (user && user.role === '창고지기' && user.status === 'PENDING_WAREHOUSE' && !isPublicPath) {
+  if (user && user.role === '창고지기' && user.status === 'PENDING_WAREHOUSE' && pathname !== '/login' && pathname !== '/signup') {
     return (
       <div className="max-w-[500px] mx-auto py-12 px-4">
         <div className="bg-white dark:bg-gray-900 border border-amber-200 dark:border-amber-900/50 rounded-3xl p-8 shadow-xl text-center space-y-6">
@@ -126,14 +127,14 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
             </div>
           )}
 
-          {user.requestedAdminEmail ? (
+          {pendingAdminEmail ? (
             <div className="p-4 bg-gray-50 dark:bg-gray-800/60 rounded-2xl border border-gray-200 dark:border-gray-700 space-y-3">
               <div className="flex items-center justify-center gap-2 text-xs font-bold text-emerald-600">
                 <CheckCircle2 className="w-4 h-4" />
                 담당 관리자 승인 대기 중
               </div>
               <p className="text-xs text-textMuted">
-                담당 관리자: <strong className="text-gray-900 dark:text-white font-mono">{user.requestedAdminEmail}</strong>
+                담당 관리자: <strong className="text-gray-900 dark:text-white font-mono">{pendingAdminEmail}</strong>
               </p>
               <button
                 onClick={refreshUser}
@@ -179,7 +180,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   // 3. 관리자 가입 후 서버 관리자(wjmals) 승인 대기 중 (PENDING_ADMIN)
-  if (user && user.role === '관리자' && user.status === 'PENDING_ADMIN' && !isPublicPath) {
+  if (user && user.role === '관리자' && user.status === 'PENDING_ADMIN' && pathname !== '/login' && pathname !== '/signup') {
     return (
       <div className="max-w-[480px] mx-auto py-12 px-4">
         <div className="bg-white dark:bg-gray-900 border border-blue-200 dark:border-blue-900/50 rounded-3xl p-8 shadow-xl text-center space-y-5">
