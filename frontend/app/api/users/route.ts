@@ -109,6 +109,13 @@ async function updateFirestoreUser(email: string, updates: Record<string, any>) 
   }
 }
 
+async function deleteFirestoreUser(email: string) {
+  const snap = await withTimeout(getDocs(query(collection(db, USERS_COL), where('email', '==', email))));
+  if (snap && !snap.empty) {
+    await Promise.all(snap.docs.map(userDoc => deleteDoc(userDoc.ref)));
+  }
+}
+
 // GET /api/users?action=...
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -378,12 +385,7 @@ export async function POST(req: NextRequest) {
       const updatedList = allUsers.filter(u => u.email !== targetEmail);
       writeLocalUsers(updatedList);
 
-      // Async Firestore delete
-      withTimeout(getDocs(query(collection(db, USERS_COL), where('email', '==', targetEmail)))).then(snap => {
-        if (snap && !snap.empty) {
-          deleteDoc(doc(db, USERS_COL, snap.docs[0].id));
-        }
-      });
+      await deleteFirestoreUser(targetEmail);
 
       return NextResponse.json({ success: true, deletedEmail: targetEmail });
     }
@@ -412,12 +414,7 @@ export async function DELETE(req: NextRequest) {
     const updated = allUsers.filter(u => u.email !== email);
     writeLocalUsers(updated);
 
-    // Async Firestore delete
-    withTimeout(getDocs(query(collection(db, USERS_COL), where('email', '==', email)))).then(snap => {
-      if (snap && !snap.empty) {
-        deleteDoc(doc(db, USERS_COL, snap.docs[0].id));
-      }
-    });
+    await deleteFirestoreUser(email);
 
     return NextResponse.json({ success: true, deletedEmail: email });
   } catch (err) {
