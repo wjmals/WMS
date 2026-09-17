@@ -23,6 +23,8 @@ type InventoryItem = {
 
 export default function AIReportPage() {
   const { user } = useAuth();
+  const isWarehouseAdmin = user?.role === '관리자' || user?.role === '총괄';
+  const canRegisterInventory = isWarehouseAdmin || user?.role === '창고지기';
   const [data, setData] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState('전체');
@@ -173,13 +175,15 @@ export default function AIReportPage() {
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
             새로고침
           </button>
-          <button
-            onClick={() => setShowAddForm(true)}
-            className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-primary text-primary hover:bg-blue-50 dark:hover:bg-blue-900/30 px-4 py-2.5 rounded-xl shadow-sm text-sm font-semibold transition-all"
-          >
-            <Plus size={16} />
-            항목 추가
-          </button>
+          {canRegisterInventory && (
+            <button
+              onClick={() => setShowAddForm(true)}
+              className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-primary text-primary hover:bg-blue-50 dark:hover:bg-blue-900/30 px-4 py-2.5 rounded-xl shadow-sm text-sm font-semibold transition-all"
+            >
+              <Plus size={16} />
+              항목 추가
+            </button>
+          )}
           <button 
             onClick={handleGenerateSummary}
             className="flex items-center gap-2 bg-[#1d1d1f] hover:bg-black text-white px-5 py-2.5 rounded-xl shadow-sm text-sm font-semibold transition-all"
@@ -385,13 +389,15 @@ export default function AIReportPage() {
                       <FileText size={14} />
                       리포트 보기
                     </button>
-                    <button
-                      onClick={() => handleDelete(item.id, item.name)}
-                      className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl text-xs transition-colors"
-                      title="항목 삭제"
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    {isWarehouseAdmin && (
+                      <button
+                        onClick={() => handleDelete(item.id, item.name)}
+                        className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl text-xs transition-colors"
+                        title="항목 삭제"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
                   </div>
                 </div>
               </motion.div>

@@ -40,6 +40,7 @@ export default function InventoryDashboard() {
   // 역할 구분: wjmals는 서버 관리자(사장님/대표), 창고 관리자는 재고/구역 수기 관리자
   const isSuperAdmin = user?.role === '서버 관리자';
   const isWarehouseAdmin = user?.role === '관리자' || user?.role === '총괄';
+  const canRegisterInventory = isWarehouseAdmin || user?.role === '창고지기';
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [zones, setZones] = useState<ZoneData[]>([]);
@@ -409,16 +410,18 @@ export default function InventoryDashboard() {
 
         <div className="flex flex-wrap items-center gap-2">
           {/* 창고 관리자(role === '관리자') 전용 수기 추가 버튼들 */}
+          {canRegisterInventory && (
+            <button
+              onClick={() => setShowAddInvModal(true)}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-sm transition-all"
+            >
+              <Plus size={16} />
+              재고 품목 수기 추가
+            </button>
+          )}
+
           {isWarehouseAdmin && (
             <>
-              <button
-                onClick={() => setShowAddInvModal(true)}
-                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-sm transition-all"
-              >
-                <Plus size={16} />
-                재고 품목 수기 추가
-              </button>
-
               <button
                 onClick={() => setShowAddZoneModal(true)}
                 className="flex items-center gap-1.5 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-sm transition-all"
@@ -499,7 +502,7 @@ export default function InventoryDashboard() {
             <p className="text-xs text-textMuted mt-0.5">실재고 수치 및 창고 관리자 수기 데이터 편집</p>
           </div>
 
-          {isWarehouseAdmin && (
+          {canRegisterInventory && (
             <button
               onClick={() => setShowAddInvModal(true)}
               className="px-3.5 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-emerald-100 transition-all"
