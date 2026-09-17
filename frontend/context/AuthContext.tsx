@@ -160,17 +160,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
       const data = await res.json();
       if (data.success && data.user) {
-        const newUser: User = {
-          id: data.user.id,
-          email: data.user.email,
-          name: data.user.name,
-          role: data.user.role,
-          status: data.user.status,
-          warehouseId: data.user.warehouseId,
-          adminEmail: data.user.adminEmail,
-        };
-        setUser(newUser);
-        localStorage.setItem('wms_auth_user', JSON.stringify(newUser));
+        // 회원가입은 승인 신청만 처리하고, 로그인은 사용자가 직접 진행한다.
         return true;
       }
       return false;

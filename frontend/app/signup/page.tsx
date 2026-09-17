@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
-import { UserPlus, Mail, Lock, User, Shield, ArrowRight, Info, CheckCircle2 } from 'lucide-react';
+import { UserPlus, Mail, Lock, User, Shield, ArrowRight, Info } from 'lucide-react';
 
 export default function SignupPage() {
   const [name, setName] = useState('');
@@ -12,7 +12,6 @@ export default function SignupPage() {
   const [role, setRole] = useState('창고지기');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [signedUpSuccess, setSignedUpSuccess] = useState(false);
 
   const { signup } = useAuth();
   const router = useRouter();
@@ -28,7 +27,7 @@ export default function SignupPage() {
     try {
       const ok = await signup(email, password, name, role);
       if (ok) {
-        setSignedUpSuccess(true);
+        router.push('/');
       } else {
         setError('회원가입 요청 처리 중 오류가 발생했습니다.');
       }
@@ -38,41 +37,6 @@ export default function SignupPage() {
       setLoading(false);
     }
   };
-
-  if (signedUpSuccess) {
-    return (
-      <div className="max-w-[480px] mx-auto py-12 px-4 font-sans">
-        <div className="bg-white dark:bg-gray-900 border border-emerald-200 dark:border-emerald-900/50 rounded-3xl p-8 shadow-xl text-center space-y-6">
-          <div className="w-16 h-16 mx-auto rounded-3xl bg-emerald-50 text-emerald-600 flex items-center justify-center border border-emerald-200 shadow-sm">
-            <CheckCircle2 className="w-9 h-9" />
-          </div>
-
-          <div>
-            <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold inline-block mb-2">
-              가입 신청 완료
-            </span>
-            <h2 className="text-2xl font-black text-gray-900 dark:text-white">
-              가입 신청이 진행 중입니다
-            </h2>
-            <p className="text-xs text-textMuted mt-2 leading-relaxed">
-              안녕하세요, <strong className="text-gray-900 dark:text-white">{name}</strong> 님!<br />
-              {role === '관리자'
-                ? '창고 관리자 계정 가입 신청이 성공적으로 접수되었습니다. 서버 관리자 승인 후 대시보드가 활성화됩니다.'
-                : '창고지기 계정 가입 신청이 완료되었습니다. 담당 창고 관리자에게 승인을 요청해 주세요.'}
-            </p>
-          </div>
-
-          <button
-            onClick={() => router.push('/')}
-            className="w-full py-3.5 bg-primary hover:bg-blue-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-md transition-all"
-          >
-            대시보드 / 승인 상태 확인하기
-            <ArrowRight className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="max-w-[480px] mx-auto py-12 px-4 font-sans">
