@@ -9,6 +9,7 @@ export default function SignupPage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
   const [role, setRole] = useState('창고지기');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -18,21 +19,27 @@ export default function SignupPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !email || !password) {
+    if (!name || !email || !password || (role === '창고지기' && !adminEmail)) {
       setError('모든 항목을 입력해주세요.');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      const ok = await signup(email, password, name, role);
+      const ok = await signup(email, password, name, role, adminEmail);
       if (ok) {
         router.push('/');
       } else {
         setError('회원가입 요청 처리 중 오류가 발생했습니다.');
       }
     } catch (err) {
-      setError('회원가입 처리 중 오류가 발생했습니다.');
+      const errorCode = (err as Error & { code?: string }).code;
+      const errorMessage = err instanceof Error ? err.message : '';
+      if (errorCode === 'EMAIL_EXISTS' || errorMessage.includes('이미 존재하는 이메일')) {
+        setError('이미 가입된 이메일입니다. 로그인하거나 다른 이메일을 사용해주세요.');
+      } else {
+        setError(errorMessage || '회원가입 처리 중 오류가 발생했습니다.');
+      }
     } finally {
       setLoading(false);
     }
@@ -135,6 +142,28 @@ export default function SignupPage() {
               </select>
             </div>
           </div>
+
+          {role === '창고지기' && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
+                승인할 창고 관리자 이메일
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="email"
+                  required
+                  value={adminEmail}
+                  onChange={(e) => setAdminEmail(e.target.value)}
+                  placeholder="manager@company.com"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white dark:focus:bg-gray-900 transition-all"
+                />
+              </div>
+              <p className="mt-1.5 text-[11px] text-textMuted">
+                입력한 관리자가 가입 신청을 승인하면 창고를 사용할 수 있습니다.
+              </p>
+            </div>
+          )}
 
           <button
             type="submit"

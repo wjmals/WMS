@@ -17,7 +17,7 @@ export interface User {
 interface AuthContextType {
   user: User | null;
   login: (email: string, password?: string) => Promise<boolean>;
-  signup: (email: string, password?: string, name?: string, role?: string) => Promise<boolean>;
+  signup: (email: string, password?: string, name?: string, role?: string, adminEmail?: string) => Promise<boolean>;
   logout: () => void;
   refreshUser: () => Promise<void>;
   isLoading: boolean;
@@ -135,7 +135,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  const signup = async (emailInput: string, passwordInput?: string, nameInput?: string, roleInput?: string): Promise<boolean> => {
+  const signup = async (emailInput: string, passwordInput?: string, nameInput?: string, roleInput?: string, adminEmailInput?: string): Promise<boolean> => {
     try {
       if (passwordInput) {
         await firebaseSignup(emailInput, passwordInput);
@@ -149,13 +149,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           password: passwordInput,
           name: nameInput,
           role: roleInput || '창고지기',
+          adminEmail: adminEmailInput,
         }),
       });
 
       if (!res.ok) {
         const errData = await res.json();
-        alert(errData.error || '회원가입 실패');
-        return false;
+        const error = new Error(errData.error || '회원가입 실패') as Error & { code?: string };
+        throw error;
       }
 
       const data = await res.json();
@@ -166,8 +167,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return false;
     } catch (err) {
       console.error('Signup error:', err);
-      alert('회원가입 처리 중 오류가 발생했습니다.');
-      return false;
+      throw err;
     }
   };
 

@@ -199,12 +199,16 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: '모든 항목(이메일, 비밀번호, 이름)을 입력해주세요.' }, { status: 400 });
       }
 
+      const isRequestedAdmin = role === '관리자';
+      if (!isRequestedAdmin && !adminEmail) {
+        return NextResponse.json({ error: '창고지기 신청에는 승인할 창고 관리자 이메일이 필요합니다.' }, { status: 400 });
+      }
+
       const exists = allUsers.some(u => u.email === email);
       if (exists) {
         return NextResponse.json({ error: '이미 존재하는 이메일입니다.' }, { status: 400 });
       }
 
-      const isRequestedAdmin = role === '관리자';
       const userDoc = {
         id: `usr_${Date.now()}`,
         email,
@@ -213,7 +217,7 @@ export async function POST(req: NextRequest) {
         role: role || '창고지기',
         status: isRequestedAdmin ? 'PENDING_ADMIN' : 'PENDING_WAREHOUSE',
         warehouseId: isRequestedAdmin ? `wh_${Date.now()}` : null,
-        adminEmail: isRequestedAdmin ? email : null,
+        adminEmail: isRequestedAdmin ? email : adminEmail,
         createdAt: new Date().toISOString(),
       };
 
