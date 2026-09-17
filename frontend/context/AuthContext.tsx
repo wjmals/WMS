@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { firebaseLogin, firebaseSignup } from '../lib/firebase-client';
 
 export interface User {
   id: string;
@@ -65,6 +66,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         };
         setUser(updated);
         localStorage.setItem('wms_auth_user', JSON.stringify(updated));
+      } else {
+        setUser(null);
+        localStorage.removeItem('wms_auth_user');
       }
     } catch (e) {
       console.error('Failed to refresh user', e);
@@ -87,6 +91,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const login = async (emailInput: string, passwordInput?: string): Promise<boolean> => {
     try {
+      if (emailInput !== 'wjmals' && passwordInput) {
+        await firebaseLogin(emailInput, passwordInput);
+      }
       const res = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -130,6 +137,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const signup = async (emailInput: string, passwordInput?: string, nameInput?: string, roleInput?: string): Promise<boolean> => {
     try {
+      if (passwordInput) {
+        await firebaseSignup(emailInput, passwordInput);
+      }
       const res = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

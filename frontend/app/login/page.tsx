@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
+import { firebaseSendPasswordReset } from '../../lib/firebase-client';
 import { Lock, Mail, UserCheck, ArrowRight, ShieldCheck, Info } from 'lucide-react';
 
 export default function LoginPage() {
@@ -10,6 +11,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetMessage, setResetMessage] = useState('');
   const { login } = useAuth();
   const router = useRouter();
 
@@ -34,6 +37,27 @@ export default function LoginPage() {
     }
   };
 
+  const handlePasswordReset = async () => {
+    const resetEmail = email.trim();
+    if (!resetEmail || !resetEmail.includes('@')) {
+      setError('비밀번호를 찾을 이메일 주소를 먼저 입력해주세요.');
+      return;
+    }
+    setResetting(true);
+    setError('');
+    setResetMessage('');
+    try {
+      await firebaseSendPasswordReset(resetEmail);
+      setResetMessage('비밀번호 재설정 이메일을 보냈습니다. 메일함을 확인해주세요.');
+    } catch (err: any) {
+      setError(err?.code === 'EMAIL_NOT_FOUND'
+        ? 'Firebase Authentication에 등록된 이메일이 없습니다.'
+        : '비밀번호 재설정 이메일을 보내지 못했습니다.');
+    } finally {
+      setResetting(false);
+    }
+  };
+
   return (
     <div className="max-w-[440px] mx-auto py-12 px-4">
       <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-8 shadow-xl backdrop-blur-md">
@@ -52,6 +76,12 @@ export default function LoginPage() {
         {error && (
           <div className="mb-6 p-4 rounded-xl bg-red-50 text-red-600 text-xs font-semibold border border-red-100">
             {error}
+          </div>
+        )}
+
+        {resetMessage && (
+          <div className="mb-6 p-4 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-100">
+            {resetMessage}
           </div>
         )}
 
@@ -101,6 +131,15 @@ export default function LoginPage() {
             <ArrowRight className="w-4 h-4" />
           </button>
         </form>
+
+        <button
+          type="button"
+          onClick={handlePasswordReset}
+          disabled={resetting}
+          className="w-full mt-4 text-xs font-semibold text-textMuted hover:text-primary disabled:opacity-50"
+        >
+          {resetting ? '재설정 이메일 보내는 중...' : '비밀번호를 잊으셨나요?'}
+        </button>
 
         <div className="mt-8 text-center text-xs text-textMuted border-t border-gray-100 dark:border-gray-800 pt-6">
           계정이 없으신가요?{' '}
