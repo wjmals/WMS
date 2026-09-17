@@ -4,6 +4,10 @@ const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
 const identityToolkitUrl = 'https://identitytoolkit.googleapis.com/v1/accounts';
 
 async function requestFirebaseAuth(endpoint: string, body: Record<string, unknown>) {
+  if (!apiKey) {
+    throw new Error('Firebase API key가 설정되지 않았습니다. Vercel 환경변수 NEXT_PUBLIC_FIREBASE_API_KEY를 확인해주세요.');
+  }
+
   const response = await fetch(`${identityToolkitUrl}:${endpoint}?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

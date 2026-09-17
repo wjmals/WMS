@@ -48,6 +48,12 @@
 | **데이터베이스** | **Google Firebase Firestore** | Real-time NoSQL 데이터베이스 |
 | **배포 & 인프라** | **Vercel Cloud & GitHub** | Vercel 호스팅, Git 버전 관리 및 자동 배포 |
 
+### Vercel 환경변수
+
+Firebase 로그인과 회원가입을 사용하려면 Vercel 프로젝트의 `Production` 및 `Preview` 환경에
+`frontend/.env.example`에 있는 `NEXT_PUBLIC_FIREBASE_*` 변수를 등록한 뒤 다시 배포해야 합니다.
+이 값들은 Firebase Console의 프로젝트 설정 > 내 앱 > 웹 앱 설정에서 확인할 수 있습니다.
+
 ---
 
 ## 📊 안전재고(Safe Stock) 파악 및 산출 메커니즘
