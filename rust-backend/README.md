@@ -10,13 +10,27 @@ Portable backend foundation for running the WMS without Vercel API routes or Fir
 ## Local setup
 
 ```bash
-createdb wms
+docker compose up -d postgres
 export DATABASE_URL=postgres://wms:wms_password@localhost:5432/wms
-psql "$DATABASE_URL" -f schema.sql
 cargo run
 ```
 
 The API listens on `http://localhost:8080` by default.
+
+Build a portable container image:
+
+```bash
+docker build -t wms-api ./rust-backend
+docker run --rm -p 8080:8080 \
+  -e DATABASE_URL="postgres://wms:wms_password@host.docker.internal:5432/wms" \
+  wms-api
+```
+
+Stop the local database with:
+
+```bash
+docker compose down
+```
 
 The existing Next.js frontend can proxy its `/api/*` requests to this service by setting `RUST_API_URL` in the Next.js runtime environment. Leave it unset until all required API routes have been migrated.
 

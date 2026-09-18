@@ -49,11 +49,13 @@ struct InventoryItem {
 
 #[derive(Deserialize)]
 struct InventoryQuery {
+    #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct CreateInventoryItem {
+    #[serde(alias = "warehouseId")]
     warehouse_id: String,
     name: String,
     current: i64,
@@ -88,7 +90,9 @@ struct UserAction {
     password: Option<String>,
     name: Option<String>,
     role: Option<String>,
+    #[serde(alias = "adminEmail")]
     admin_email: Option<String>,
+    #[serde(alias = "targetEmail")]
     target_email: Option<String>,
 }
 
@@ -96,6 +100,7 @@ struct UserAction {
 struct UserQuery {
     action: Option<String>,
     email: Option<String>,
+    #[serde(alias = "adminEmail")]
     admin_email: Option<String>,
 }
 
@@ -117,12 +122,14 @@ struct ZoneRecord {
 
 #[derive(Deserialize)]
 struct ZoneQuery {
+    #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SaveZone {
     id: String,
+    #[serde(alias = "warehouseId")]
     warehouse_id: String,
     name: String,
     state: Option<String>,
@@ -135,6 +142,7 @@ struct SaveZone {
 #[derive(Deserialize)]
 struct UpdateInventoryItem {
     id: Uuid,
+    #[serde(alias = "warehouseId")]
     warehouse_id: String,
     current: i64,
     safe: Option<i64>,
@@ -143,12 +151,14 @@ struct UpdateInventoryItem {
 #[derive(Deserialize)]
 struct DeleteInventoryQuery {
     id: Uuid,
+    #[serde(alias = "warehouseId")]
     warehouse_id: String,
 }
 
 #[derive(Deserialize)]
 struct DeleteZoneQuery {
     id: String,
+    #[serde(alias = "warehouseId")]
     warehouse_id: String,
 }
 
@@ -166,12 +176,14 @@ struct ItemReference {
 
 #[derive(Deserialize)]
 struct ReferenceQuery {
+    #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
     id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
 struct CreateReference {
+    #[serde(alias = "warehouseId")]
     warehouse_id: String,
     image: String,
     name: String,
@@ -214,8 +226,11 @@ struct DeliveryQuery {
 #[derive(Deserialize)]
 struct MonitorInput {
     image: String,
+    #[serde(alias = "itemName")]
     item_name: Option<String>,
+    #[serde(alias = "cameraUrl")]
     camera_url: Option<String>,
+    #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
 }
 
