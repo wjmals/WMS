@@ -1,4 +1,5 @@
 use argon2::{password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString}, Argon2};
+use bcrypt::verify as verify_bcrypt;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -435,9 +436,17 @@ async fn users_action(
                 "SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at, password_hash FROM users WHERE email = $1",
             ).bind(&login).fetch_optional(&db).await.map_err(internal_error)?
                 .ok_or_else(|| (StatusCode::NOT_FOUND, "등록되지 않은 계정입니다.".to_string()))?;
-            let parsed = PasswordHash::new(&row.10).map_err(|_| (StatusCode::UNAUTHORIZED, "비밀번호가 일치하지 않습니다.".to_string()))?;
-            Argon2::default().verify_password(password.as_bytes(), &parsed)
-                .map_err(|_| (StatusCode::UNAUTHORIZED, "비밀번호가 일치하지 않습니다.".to_string()))?;
+            let verified = if row.10.starts_with("$2") {
+                verify_bcrypt(password, &row.10).unwrap_or(false)
+            } else {
+                PasswordHash::new(&row.10)
+                    .ok()
+                    .map(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+                    .unwrap_or(false)
+            };
+            if !verified {
+                return Err((StatusCode::UNAUTHORIZED, "비밀번호가 일치하지 않습니다.".to_string()));
+            }
             Ok(Json(serde_json::json!({
                 "success": true,
                 "user": { "id": row.0, "email": row.1, "name": row.2, "role": row.3, "status": row.4, "warehouseId": row.5, "adminEmail": row.6, "requestedAdminEmail": row.7, "createdAt": row.8, "approvedAt": row.9 }

@@ -57,3 +57,21 @@ This is the first migration slice. The existing Next.js API routes still serve t
 - authentication and password hashing
 
 Do not put database credentials in the frontend or commit `.env` files.
+
+## Firebase data migration
+
+The one-time migration script is `backend/functions/scripts/migrate-firestore-to-postgres.js`.
+It reads Firestore with a service account and writes the PostgreSQL schema created by `schema.sql`.
+
+Run it only after taking a PostgreSQL backup and reviewing the target database:
+
+```bash
+cd backend/functions
+npm install
+export GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/serviceAccountKey.json"
+export DATABASE_URL="postgres://user:password@host:5432/wms"
+export MIGRATION_WAREHOUSE_ID="wh_wjmals"
+npm run migrate:postgres
+```
+
+The script is intentionally not run automatically. It imports passwords as bcrypt hashes; new Rust-created accounts use Argon2, and the Rust login API supports both formats during the migration period.
