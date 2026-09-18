@@ -2,7 +2,7 @@ use argon2::{password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Sal
 use axum::{
     extract::{Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -91,6 +91,13 @@ struct UserAction {
     target_email: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct UserQuery {
+    action: Option<String>,
+    email: Option<String>,
+    admin_email: Option<String>,
+}
+
 #[derive(Debug, Serialize, FromRow)]
 struct ZoneRecord {
     id: String,
@@ -170,6 +177,62 @@ struct CreateReference {
     description: Option<String>,
 }
 
+#[derive(Debug, Serialize, FromRow)]
+struct DeliveryRecord {
+    id: Uuid,
+    invoice_no: String,
+    carrier_code: String,
+    carrier_name: String,
+    item_name: String,
+    sender_name: String,
+    receiver_name: String,
+    status: String,
+    status_code: String,
+    current_location: String,
+    delivered_at: Option<DateTime<Utc>>,
+    tracking_details: Value,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct CreateDelivery {
+    invoice_no: String,
+    carrier_code: Option<String>,
+    carrier_name: Option<String>,
+    item_name: Option<String>,
+    sender_name: Option<String>,
+    receiver_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DeliveryQuery {
+    id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+struct MonitorInput {
+    image: String,
+    item_name: Option<String>,
+    camera_url: Option<String>,
+    warehouse_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AnalysisResult {
+    #[serde(rename = "itemName")]
+    item_name: String,
+    #[serde(rename = "estimatedQuantity")]
+    estimated_quantity: i64,
+    unit: String,
+    status: String,
+    #[serde(rename = "statusLabel")]
+    status_label: String,
+    confidence: i32,
+    recommendation: String,
+    reason: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
@@ -193,9 +256,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/inventory", get(list_inventory).post(create_inventory).patch(update_inventory).delete(delete_inventory))
-        .route("/api/users", post(users_action))
+        .route("/api/users", get(get_users).post(users_action).delete(delete_user))
         .route("/api/zones", get(list_zones).post(save_zone).delete(delete_zone))
         .route("/api/vision", get(list_references).post(create_reference).delete(delete_reference))
+        .route("/api/delivery", get(list_delivery).post(create_delivery).delete(delete_delivery).put(advance_delivery))
+        .route("/api/monitor", get(list_monitor_logs).post(analyze_monitor_image))
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -401,6 +466,52 @@ async fn users_action(
     }
 }
 
+async fn get_users(
+    State(state): State<AppState>,
+    Query(query): Query<UserQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let action = query.action.unwrap_or_else(|| "list".to_string());
+    if action == "get_user" {
+        let email = required(query.email, "email")?;
+        let user = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE email = $1")
+            .bind(email).fetch_optional(&db).await.map_err(internal_error)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "사용자를 찾을 수 없습니다.".to_string()))?;
+        return Ok(Json(serde_json::to_value(user).unwrap_or(Value::Null)));
+    }
+    if action == "list_requests" {
+        let admin = required(query.admin_email, "adminEmail")?;
+        let requests = sqlx::query_as::<_, (Uuid, String, String, DateTime<Utc>)>(
+            "SELECT id, user_email, user_name, requested_at FROM warehouse_access_requests WHERE admin_email = $1 AND status = 'PENDING' ORDER BY requested_at",
+        ).bind(&admin).fetch_all(&db).await.map_err(internal_error)?;
+        let pending = requests.into_iter().map(|r| serde_json::json!({ "id": r.0, "userEmail": r.1, "userName": r.2, "requestedAt": r.3 })).collect::<Vec<_>>();
+        let members = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE admin_email = $1 AND status = 'APPROVED' ORDER BY name")
+            .bind(admin).fetch_all(&db).await.map_err(internal_error)?;
+        return Ok(Json(serde_json::json!({ "pendingRequests": pending, "teamMembers": members })));
+    }
+    if action == "list_admin_requests" {
+        let users = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE role = '관리자' AND status <> 'APPROVED' ORDER BY created_at")
+            .fetch_all(&db).await.map_err(internal_error)?;
+        return Ok(Json(serde_json::to_value(users).unwrap_or(Value::Null)));
+    }
+    let users = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users ORDER BY created_at")
+        .fetch_all(&db).await.map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(users).unwrap_or(Value::Null)))
+}
+
+async fn delete_user(
+    State(state): State<AppState>,
+    Query(query): Query<UserQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let email = required(query.email, "email")?;
+    let result = sqlx::query("DELETE FROM users WHERE email = $1").bind(&email).execute(&db).await.map_err(internal_error)?;
+    if result.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, "사용자를 찾을 수 없습니다.".to_string()));
+    }
+    Ok(Json(serde_json::json!({ "success": true, "deletedEmail": email })))
+}
+
 async fn list_zones(
     State(state): State<AppState>,
     Query(query): Query<ZoneQuery>,
@@ -485,6 +596,121 @@ async fn delete_reference(
         return Err((StatusCode::NOT_FOUND, "학습 데이터를 찾을 수 없습니다.".to_string()));
     }
     Ok(Json(serde_json::json!({ "success": true, "deletedId": id })))
+}
+
+async fn list_delivery(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<DeliveryRecord>>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let rows = sqlx::query_as::<_, DeliveryRecord>(
+        "SELECT id, invoice_no, carrier_code, carrier_name, item_name, sender_name, receiver_name, status, status_code, current_location, delivered_at, tracking_details, created_at, updated_at
+         FROM delivery_tracking WHERE delivered_at IS NULL OR delivered_at > now() - interval '24 hours' ORDER BY created_at DESC",
+    ).fetch_all(&db).await.map_err(internal_error)?;
+    Ok(Json(rows))
+}
+
+async fn create_delivery(
+    State(state): State<AppState>,
+    Json(input): Json<CreateDelivery>,
+) -> Result<(StatusCode, Json<DeliveryRecord>), (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let invoice = input.invoice_no.chars().filter(|c| c.is_ascii_digit()).collect::<String>();
+    if invoice.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "운송장 번호를 입력해주세요.".to_string()));
+    }
+    let row = sqlx::query_as::<_, DeliveryRecord>(
+        "INSERT INTO delivery_tracking (invoice_no, carrier_code, carrier_name, item_name, sender_name, receiver_name, status, status_code, current_location)
+         VALUES ($1, COALESCE($2, '04'), COALESCE($3, 'CJ대한통운'), COALESCE($4, '물류 출고건'), COALESCE($5, 'WMS 스마트 물류센터'), COALESCE($6, '고객님'), '상품인수', 'AT_PICKUP', '배송 접수처')
+         RETURNING id, invoice_no, carrier_code, carrier_name, item_name, sender_name, receiver_name, status, status_code, current_location, delivered_at, tracking_details, created_at, updated_at",
+    ).bind(invoice).bind(input.carrier_code).bind(input.carrier_name).bind(input.item_name).bind(input.sender_name).bind(input.receiver_name)
+    .fetch_one(&db).await.map_err(internal_error)?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+async fn delete_delivery(
+    State(state): State<AppState>,
+    Query(query): Query<DeliveryQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let id = query.id.ok_or_else(|| (StatusCode::BAD_REQUEST, "id가 필요합니다.".to_string()))?;
+    sqlx::query("DELETE FROM delivery_tracking WHERE id = $1").bind(id).execute(&db).await.map_err(internal_error)?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+async fn advance_delivery(
+    State(state): State<AppState>,
+    Json(query): Json<DeliveryQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let id = query.id.ok_or_else(|| (StatusCode::BAD_REQUEST, "id가 필요합니다.".to_string()))?;
+    let current = sqlx::query_as::<_, (String, String)>("SELECT status_code, status FROM delivery_tracking WHERE id = $1")
+        .bind(id).fetch_optional(&db).await.map_err(internal_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "배송 항목 없음".to_string()))?;
+    let (next_code, next_status, delivered) = match current.0.as_str() {
+        "AT_PICKUP" => ("IN_TRANSIT", "허브터미널 이동중", false),
+        "IN_TRANSIT" => ("OUT_FOR_DELIVERY", "배달출발", false),
+        _ => ("DELIVERED", "배송완료", true),
+    };
+    sqlx::query("UPDATE delivery_tracking SET status_code = $1, status = $2, current_location = $3, delivered_at = CASE WHEN $4 THEN now() ELSE NULL END, updated_at = now() WHERE id = $5")
+        .bind(next_code).bind(next_status).bind(if delivered { "고객 지정장소 (문 앞 배송완료)" } else { "배송 이동 중" }).bind(delivered).bind(id)
+        .execute(&db).await.map_err(internal_error)?;
+    Ok(Json(serde_json::json!({ "success": true, "status": next_status, "statusCode": next_code })))
+}
+
+async fn list_monitor_logs(
+    State(state): State<AppState>,
+    Query(query): Query<ZoneQuery>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let warehouse_id = query.warehouse_id.unwrap_or_else(|| "wh_wjmals".to_string());
+    let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, i64, String, i32, String, String, Option<String>, DateTime<Utc>)>(
+        "SELECT id, camera_url, item_name, status, status_label, estimated_quantity, unit, confidence, recommendation, reason, image_snapshot, analyzed_at
+         FROM monitor_logs WHERE warehouse_id = $1 ORDER BY analyzed_at DESC LIMIT 50",
+    ).bind(warehouse_id).fetch_all(&db).await.map_err(internal_error)?;
+    let values = rows.into_iter().map(|row| serde_json::json!({
+        "id": row.0, "camera_url": row.1, "item_name": row.2, "status": row.3, "status_label": row.4,
+        "estimated_quantity": row.5, "unit": row.6, "confidence": row.7, "recommendation": row.8,
+        "reason": row.9, "image_snapshot": row.10, "analyzed_at": row.11
+    })).collect();
+    Ok(Json(values))
+}
+
+async fn analyze_monitor_image(
+    State(state): State<AppState>,
+    Json(input): Json<MonitorInput>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let api_key = env::var("GROQ_API_KEY").map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "GROQ_API_KEY is not configured".to_string()))?;
+    let warehouse_id = input.warehouse_id.unwrap_or_else(|| "wh_wjmals".to_string());
+    let image_url = if input.image.starts_with("data:") { input.image.clone() } else { format!("data:image/jpeg;base64,{}", input.image) };
+    let prompt = format!("당신은 창고 재고 관리 AI입니다. 이미지에서 품목과 재고 상태를 분석하고 JSON만 반환하세요. 우선 품목: {}. 필드: itemName, estimatedQuantity, unit, status(shortage|safe|overstock), statusLabel, confidence(0-100), recommendation, reason.", input.item_name.as_deref().unwrap_or("없음"));
+    let payload = serde_json::json!({
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": prompt },
+            { "type": "image_url", "image_url": { "url": image_url } }
+        ]}],
+        "max_tokens": 512,
+        "temperature": 0.1
+    });
+    let response = reqwest::Client::new().post("https://api.groq.com/openai/v1/chat/completions")
+        .bearer_auth(api_key).json(&payload).send().await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    if !response.status().is_success() {
+        return Err((StatusCode::BAD_GATEWAY, format!("Groq API returned {}", response.status())));
+    }
+    let body: Value = response.json().await.map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let content = body["choices"][0]["message"]["content"].as_str().unwrap_or("");
+    let json_text = content.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    let result: AnalysisResult = serde_json::from_str(json_text)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, format!("AI response JSON parse failed: {}", error)))?;
+    sqlx::query("INSERT INTO monitor_logs (warehouse_id, camera_url, item_name, status, status_label, estimated_quantity, unit, confidence, recommendation, reason, image_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+        .bind(&warehouse_id).bind(input.camera_url.unwrap_or_else(|| "webcam".to_string())).bind(&result.item_name).bind(&result.status).bind(&result.status_label).bind(result.estimated_quantity).bind(&result.unit).bind(result.confidence).bind(&result.recommendation).bind(&result.reason).bind(input.image.chars().take(1000).collect::<String>())
+        .execute(&db).await.map_err(internal_error)?;
+    sqlx::query("UPDATE inventory_items SET current = $1, status = $2, status_label = $3, updated_at = now() WHERE warehouse_id = $4 AND name = $5")
+        .bind(result.estimated_quantity).bind(&result.status).bind(&result.status_label).bind(&warehouse_id).bind(&result.item_name)
+        .execute(&db).await.map_err(internal_error)?;
+    Ok(Json(serde_json::json!({ "itemName": result.item_name, "estimatedQuantity": result.estimated_quantity, "unit": result.unit, "status": result.status, "statusLabel": result.status_label, "confidence": result.confidence, "recommendation": result.recommendation, "reason": result.reason, "savedToDb": true })))
 }
 
 fn required(value: Option<String>, name: &str) -> Result<String, (StatusCode, String)> {
