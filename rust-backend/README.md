@@ -18,6 +18,8 @@ cargo run
 
 The API listens on `http://localhost:8080` by default.
 
+The existing Next.js frontend can proxy its `/api/*` requests to this service by setting `RUST_API_URL` in the Next.js runtime environment. Leave it unset until all required API routes have been migrated.
+
 ## Endpoints
 
 ```text
