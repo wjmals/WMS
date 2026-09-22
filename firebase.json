@@ -1,6 +1,0 @@
-{
-  "functions": {
-    "source": "backend/functions",
-    "runtime": "nodejs20"
-  }
-}

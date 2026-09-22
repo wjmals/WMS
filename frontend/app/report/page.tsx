@@ -118,7 +118,6 @@ export default function AIReportPage() {
     setShowAiSummaryModal(true);
     setAiGenerating(true);
     setAiSummaryContent('');
-
     // 실제 데이터 기반 AI 종합 분석 생성
     setTimeout(() => {
       const shortageList = data.filter(i => i.status === 'shortage').map(i => i.name).join(', ');

@@ -27,6 +27,7 @@ CREATE INDEX IF NOT EXISTS inventory_items_warehouse_idx
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username TEXT,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     approved_at TIMESTAMPTZ
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_key ON users(username) WHERE username IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS warehouse_zones (
     id TEXT NOT NULL,

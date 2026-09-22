@@ -88,7 +88,7 @@ export default function MonitorPage() {
   const [totalAnalyzed, setTotalAnalyzed] = useState(0);
   const [shortageCount, setShortageCount] = useState(0);
 
-  // AI 품목 학습 데이터 상태
+  // AI 분석용 레퍼런스 이미지 상태
   const [references, setReferences] = useState<any[]>([]);
   const [showLearnModal, setShowLearnModal] = useState(false);
   const [learnName, setLearnName] = useState('');
@@ -105,7 +105,7 @@ export default function MonitorPage() {
     } catch {}
   }, [user]);
 
-  // 학습 데이터(레퍼런스 이미지) 불러오기
+  // 분석용 레퍼런스 이미지 불러오기
   const fetchReferences = useCallback(async () => {
     try {
       const res = await fetch(`/api/vision?warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`);
@@ -131,7 +131,7 @@ export default function MonitorPage() {
     reader.readAsDataURL(file);
   };
 
-  // 현재 카메라 화면 캡처하여 학습 이미지로 사용
+  // 현재 카메라 화면 캡처하여 레퍼런스 이미지로 사용
   const handleCaptureForLearn = () => {
     if (!videoRef.current || !canvasRef.current) return;
     const canvas = canvasRef.current;
@@ -145,7 +145,7 @@ export default function MonitorPage() {
     setLearnImage(data);
   };
 
-  // 품목 학습 데이터 저장
+  // 품목 레퍼런스 이미지 저장
   const handleSaveReference = async () => {
     if (!learnName || !learnImage) {
       alert('품목명과 이미지를 모두 지정해주세요.');
@@ -166,30 +166,30 @@ export default function MonitorPage() {
       });
       if (!res.ok) {
         const errorData = await res.json().catch(() => null);
-        throw new Error(errorData?.error || '학습 등록에 실패했습니다.');
+        throw new Error(errorData?.error || '레퍼런스 이미지 등록에 실패했습니다.');
       }
       setLearnName('');
       setLearnDesc('');
       setLearnImage(null);
       setShowLearnModal(false);
       await fetchReferences();
-      alert(`[${referenceName}] 품목 학습 이미지가 등록되었습니다.`);
+      alert(`[${referenceName}] 분석용 레퍼런스 이미지가 등록되었습니다.`);
     } catch (e) {
-      alert(e instanceof Error ? e.message : '학습 등록 중 오류가 발생했습니다.');
+      alert(e instanceof Error ? e.message : '레퍼런스 이미지 등록 중 오류가 발생했습니다.');
     } finally {
       setSavingReference(false);
     }
   };
 
-  // 학습 데이터 삭제
+  // 레퍼런스 이미지 삭제
   const handleDeleteReference = async (id: string, name: string) => {
-    if (!confirm(`[${name}] 학습 레퍼런스를 삭제하시겠습니까?`)) return;
+    if (!confirm(`[${name}] 분석용 레퍼런스를 삭제하시겠습니까?`)) return;
     try {
       const res = await fetch(`/api/vision?id=${id}&warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('학습 데이터 삭제에 실패했습니다.');
+      if (!res.ok) throw new Error('레퍼런스 이미지 삭제에 실패했습니다.');
       await fetchReferences();
     } catch (e) {
-      alert(e instanceof Error ? e.message : '학습 데이터 삭제에 실패했습니다.');
+      alert(e instanceof Error ? e.message : '레퍼런스 이미지 삭제에 실패했습니다.');
     }
   };
 
@@ -368,7 +368,7 @@ export default function MonitorPage() {
             className="flex items-center gap-1.5 px-3.5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm"
           >
             <Sparkles size={16} />
-            AI 품목 학습 등록 ({references.length})
+            분석용 레퍼런스 등록 ({references.length})
           </button>
 
           <button 
@@ -615,25 +615,25 @@ export default function MonitorPage() {
             </div>
           )}
 
-          {/* 학습된 AI 품목 레퍼런스 카드 */}
+          {/* AI 분석용 품목 레퍼런스 카드 */}
           <div className="bg-white dark:bg-gray-900 border border-purple-100 dark:border-purple-900/30 rounded-3xl p-5 shadow-sm space-y-3">
             <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-gray-800">
               <h3 className="font-bold text-sm text-textMain dark:text-white flex items-center gap-2">
                 <BookOpen size={16} className="text-purple-600" />
-                학습된 AI 품목 이미지 ({references.length}건)
+                AI 분석용 품목 이미지 ({references.length}건)
               </h3>
               <button
                 onClick={() => setShowLearnModal(true)}
                 className="text-xs text-purple-600 font-bold hover:underline flex items-center gap-1"
               >
-                <Plus size={14} /> 추가 학습
+                <Plus size={14} /> 레퍼런스 추가
               </button>
             </div>
 
             {references.length === 0 ? (
               <div className="py-4 text-center text-textMuted text-xs">
-                아직 등록된 학습 이미지가 없습니다.<br />
-                사진을 등록하여 AI에게 품목을 학습시키세요!
+                아직 등록된 레퍼런스 이미지가 없습니다.<br />
+                사진을 등록하면 다음 분석에서 품목 비교 기준으로 사용됩니다.
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
@@ -647,7 +647,7 @@ export default function MonitorPage() {
                       <button
                         onClick={() => handleDeleteReference(ref.id, ref.name)}
                         className="text-gray-400 hover:text-red-500 p-1"
-                        title="학습 데이터 삭제"
+                        title="레퍼런스 이미지 삭제"
                       >
                         <Trash2 size={12} />
                       </button>
@@ -714,7 +714,7 @@ export default function MonitorPage() {
 
       </div>
 
-      {/* AI 품목 학습 등록 모달 */}
+      {/* AI 분석용 품목 레퍼런스 등록 모달 */}
       {showLearnModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white dark:bg-gray-900 rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-5">
@@ -724,7 +724,7 @@ export default function MonitorPage() {
                   <Sparkles size={18} />
                 </div>
                 <h3 className="font-bold text-lg text-textMain dark:text-white">
-                  AI 품목 사전 학습 등록
+                  AI 분석용 품목 레퍼런스 등록
                 </h3>
               </div>
               <button
@@ -764,7 +764,7 @@ export default function MonitorPage() {
 
               <div>
                 <label className="font-bold text-textMain dark:text-gray-200 block mb-1">
-                  학습용 레퍼런스 이미지 등록 *
+                  분석 기준 레퍼런스 이미지 등록 *
                 </label>
                 <div className="flex gap-2 mb-2">
                   <label className="flex-1 cursor-pointer bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 font-bold py-2.5 px-4 rounded-xl text-center flex items-center justify-center gap-2 border border-purple-200 dark:border-purple-800 transition-all">
@@ -790,7 +790,7 @@ export default function MonitorPage() {
 
                 {learnImage ? (
                   <div className="relative rounded-2xl overflow-hidden aspect-video border border-purple-300">
-                    <img src={learnImage} alt="학습 샘플" className="w-full h-full object-cover" />
+                    <img src={learnImage} alt="분석 기준 이미지" className="w-full h-full object-cover" />
                     <button
                       onClick={() => setLearnImage(null)}
                       className="absolute top-2 right-2 bg-black/60 text-white p-1 rounded-full hover:bg-black"
@@ -800,7 +800,7 @@ export default function MonitorPage() {
                   </div>
                 ) : (
                   <div className="border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl p-6 text-center text-textMuted">
-                    사진을 업로드하거나 현재 카메라 화면을 캡처하여 AI 학습 샘플을 등록하세요.
+                    사진을 업로드하거나 현재 카메라 화면을 캡처하여 다음 AI 분석의 비교 기준으로 등록하세요.
                   </div>
                 )}
               </div>
@@ -819,7 +819,7 @@ export default function MonitorPage() {
                 className="px-6 py-2.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl disabled:opacity-50 transition-all flex items-center gap-1.5"
               >
                 <Sparkles size={14} />
-                {savingReference ? '학습 데이터 저장 중...' : 'AI 품목 학습 저장'}
+                {savingReference ? '레퍼런스 저장 중...' : '분석 기준 이미지 저장'}
               </button>
             </div>
           </div>

@@ -250,7 +250,7 @@ export default function InventoryDashboard() {
                 <Barcode className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                1. 스마트 바코드 스캐너 & 입출고 (`/barcode`)
+                1. 스마트 바코드 스캐너 & 입출고
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
                 스마트폰 카메라 또는 바코드 리더기를 이용해 바코드/SKU를 스캔하고, 창고 보관 구역 위치를 조회한 후 즉시 현장에서 수량 조정(+/- 톤)이 가능합니다.
@@ -262,7 +262,7 @@ export default function InventoryDashboard() {
                 <Camera className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                2. Groq LLaMA-4 Vision AI 실시간 관제 (`/monitor`)
+                2. Groq LLaMA-4 Vision AI 실시간 관제
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
                 CCTV 카메라 스트림을 비전 AI 모델이 실시간 분석하고, 수치 감지 시 DB 및 창고 공실률에 즉시 자동 반영합니다.
@@ -274,7 +274,7 @@ export default function InventoryDashboard() {
                 <Warehouse className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                3. 실재고 용량 연동 창고 공실률 동적 산출 (`/api/zones`)
+                3. 실재고 용량 연동 창고 공실률 동적 산출
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
                 창고 구역별 실제 보관 중인 품목 수량을 실시간 계산하여 공실률(0%~100%) 및 상태를 동적으로 갱신합니다.
@@ -286,10 +286,10 @@ export default function InventoryDashboard() {
                 <ShieldCheck className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                4. 서버 관리자(`wjmals`) & 창고 관리자 역할 분리
+                4. 서버 관리자 & 창고 관리자 역할 분리
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
-                서버 관리자(`wjmals`)는 신규 창고 관리자 가입을 총괄 승인하고, 창고 관리자는 본인 창고의 재고/구역을 수기로 관리합니다.
+                서버 관리자는 신규 창고 관리자 가입을 총괄 승인하고, 창고 관리자는 본인 창고의 재고/구역을 수기로 관리합니다.
               </p>
             </div>
           </div>

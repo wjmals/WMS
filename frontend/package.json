@@ -10,7 +10,6 @@
     "export": "next export"
   },
   "dependencies": {
-    "firebase": "^10.6.0",
     "framer-motion": "^10.16.4",
     "groq-sdk": "^1.6.0",
     "lucide-react": "^0.294.0",

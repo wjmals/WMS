@@ -9,7 +9,7 @@
 ### 1. 📷 스마트 바코드 스캐너 & 실시간 재고 조정 (`/barcode`)
 - **실시간 카메라 / 바코드 리더기 연동**: 스마트폰 및 PC 카메라, 바코드 리더기를 통해 SKU/바코드 스캔.
 - **창고 보관 구역 위치 조회**: 스캔 즉시 담당 창고 구역 (예: `A구역 - 냉동 보관 01-A`) 및 보관 상태 파악.
-- **실시간 입출고 조정 (+/- 톤)**: 현장에서 스캔 후 수량 조정 클릭 시 Google Firebase Firestore DB에 즉시 반영.
+- **실시간 입출고 조정 (+/- 톤)**: 현장에서 스캔 후 수량 조정 클릭 시 Rust API를 통해 PostgreSQL에 즉시 반영.
 
 ### 2. 📹 Groq LLaMA-4 Vision AI 실시간 CCTV 감지 (`/monitor`)
 - **멀티모달 비전 AI 모델 연동**: Groq SDK 기반 `meta-llama/llama-4-scout-17b-16e-instruct` 모델 적용.
@@ -45,14 +45,30 @@
 | **UI & 스타일링** | **Tailwind CSS, Framer Motion** | Apple 스타일 모던 인터페이스 및 반응형 디자인 |
 | **데이터 시각화** | **Recharts** | 30일 시계열 수요 예측 차트 |
 | **AI 비전 모델** | **Groq LLaMA-4 Scout Vision** | `meta-llama/llama-4-scout-17b-16e-instruct` |
-| **데이터베이스** | **Google Firebase Firestore** | Real-time NoSQL 데이터베이스 |
+| **데이터베이스** | **PostgreSQL 16** | Rust API가 SQLx를 통해 재고, 사용자, 구역, 배송, 모니터링 데이터를 관리 |
 | **배포 & 인프라** | **Vercel Cloud & GitHub** | Vercel 호스팅, Git 버전 관리 및 자동 배포 |
 
 ### Vercel 환경변수
 
-Firebase 로그인과 회원가입을 사용하려면 Vercel 프로젝트의 `Production` 및 `Preview` 환경에
-`frontend/.env.example`에 있는 `NEXT_PUBLIC_FIREBASE_*` 변수를 등록한 뒤 다시 배포해야 합니다.
-이 값들은 Firebase Console의 프로젝트 설정 > 내 앱 > 웹 앱 설정에서 확인할 수 있습니다.
+현재 로그인, 회원가입, 재고 및 운영 데이터는 Rust API와 PostgreSQL을 사용합니다.
+배포 환경에는 다음 값을 등록해야 합니다.
+
+```env
+DATABASE_URL=postgres://<user>:<password>@<host>:5432/<database>
+RUST_API_URL=https://<rust-api-host>
+GROQ_API_KEY=<required-for-ai-monitoring>
+```
+
+로컬 Docker 구성은 `docker-compose.yml`과 `start-wms.sh`를 기준으로 합니다.
+
+## 📚 프로젝트 문서
+
+- [API 명세서](docs/API_명세서.md): Rust API 엔드포인트, 요청/응답, 상태 코드, 데이터 모델
+- [기능 명세서](docs/기능_명세서.md): 역할별 기능, 승인 흐름, 업무 규칙, 운영 요구사항 및 인수 테스트
+- [DB 구조도](docs/DB_구조도.md): ER 다이어그램, 테이블별 컬럼 설명, 인덱스와 제약조건
+- [데이터셋 구조도](docs/데이터셋_구조도.md): 엔터티별 예시 JSON, 값 범위, 이미지 인코딩 규칙, 창고 분리 규칙
+- [파일 구조도](docs/파일_구조도.md): 저장소 폴더/파일 구조 전체 개요
+- [프로젝트 제안서](docs/프로젝트_제안서.md): Amazon Working Backwards / 6-Pager 형식의 배경, 목표, 일정, 위험 관리, Q&A
 
 ---
 

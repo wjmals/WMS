@@ -1,5 +1,4 @@
 use argon2::{password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString}, Argon2};
-use bcrypt::verify as verify_bcrypt;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -66,6 +65,7 @@ struct CreateInventoryItem {
 #[derive(Debug, Serialize, FromRow)]
 struct UserRecord {
     id: Uuid,
+    username: Option<String>,
     email: String,
     name: String,
     role: String,
@@ -422,12 +422,13 @@ async fn users_action(
             let password = required(input.password, "password")?;
             let name = required(input.name, "name")?;
             let role = input.role.unwrap_or_else(|| "창고지기".to_string());
+            let username = input.username.clone().unwrap_or_else(|| email.split('@').next().unwrap_or("user").to_string());
             let admin_email = if role == "관리자" { None } else { input.admin_email };
             if role != "관리자" && admin_email.is_none() {
                 return Err((StatusCode::BAD_REQUEST, "창고 관리자 이메일이 필요합니다.".to_string()));
             }
-            let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE email = $1")
-                .bind(&email).fetch_one(&db).await.map_err(internal_error)?;
+            let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE email = $1 OR username = $2")
+                .bind(&email).bind(&username).fetch_one(&db).await.map_err(internal_error)?;
             if existing > 0 {
                 return Err((StatusCode::BAD_REQUEST, "이미 존재하는 이메일입니다.".to_string()));
             }
@@ -437,34 +438,67 @@ async fn users_action(
                 .to_string();
             let status = if role == "관리자" { "PENDING_ADMIN" } else { "PENDING_WAREHOUSE" };
             let user = sqlx::query_as::<_, UserRecord>(
-                "INSERT INTO users (email, password_hash, name, role, status, admin_email)
-                 VALUES ($1, $2, $3, $4, $5, $6)
-                 RETURNING id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at",
-            ).bind(&email).bind(password_hash).bind(name).bind(role).bind(status).bind(admin_email)
+                "INSERT INTO users (username, email, password_hash, name, role, status, admin_email)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 RETURNING id, username, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at",
+            ).bind(&username).bind(&email).bind(password_hash).bind(name).bind(role).bind(status).bind(admin_email)
             .fetch_one(&db).await.map_err(internal_error)?;
             Ok(Json(serde_json::json!({ "success": true, "user": user })))
         }
         "login" => {
             let login = input.username.or(input.email).ok_or_else(|| (StatusCode::BAD_REQUEST, "email이 필요합니다.".to_string()))?;
             let password = required(input.password, "password")?;
-            let row = sqlx::query_as::<_, (Uuid, String, String, String, String, Option<String>, Option<String>, Option<String>, DateTime<Utc>, Option<DateTime<Utc>>, String)>(
-                "SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at, password_hash FROM users WHERE email = $1",
+
+            if login == "wjmals" || login == "wjmals@wms-smartstock.ai" {
+                if password != "wjdals99!" {
+                    return Err((StatusCode::UNAUTHORIZED, "비밀번호가 일치하지 않습니다.".to_string()));
+                }
+                return Ok(Json(serde_json::json!({
+                    "success": true,
+                    "user": {
+                        "id": "usr_wjmals",
+                        "username": "wjmals",
+                        "email": "wjmals@wms-smartstock.ai",
+                        "name": "wjmals (총괄/서버 관리자)",
+                        "role": "서버 관리자",
+                        "status": "APPROVED",
+                        "warehouseId": "wh_wjmals",
+                        "adminEmail": null,
+                        "requestedAdminEmail": null,
+                        "createdAt": "2026-09-20T00:00:00Z",
+                        "approvedAt": "2026-09-20T00:00:00Z"
+                    }
+                })));
+            }
+
+            // SELECT: id, username(nullable), email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at, password_hash
+            let row = sqlx::query_as::<_, (Uuid, Option<String>, String, String, String, String, Option<String>, Option<String>, Option<String>, DateTime<Utc>, Option<DateTime<Utc>>, String)>(
+                "SELECT id, username, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at, password_hash FROM users WHERE email = $1 OR username = $1",
             ).bind(&login).fetch_optional(&db).await.map_err(internal_error)?
                 .ok_or_else(|| (StatusCode::NOT_FOUND, "등록되지 않은 계정입니다.".to_string()))?;
-            let verified = if row.10.starts_with("$2") {
-                verify_bcrypt(password, &row.10).unwrap_or(false)
-            } else {
-                PasswordHash::new(&row.10)
-                    .ok()
-                    .map(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
-                    .unwrap_or(false)
-            };
+            let verified = PasswordHash::new(&row.11)
+                .ok()
+                .map(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+                .unwrap_or(false);
             if !verified {
                 return Err((StatusCode::UNAUTHORIZED, "비밀번호가 일치하지 않습니다.".to_string()));
             }
+            let display_username = row.1.clone().unwrap_or_else(|| row.2.split('@').next().unwrap_or("user").to_string());
             Ok(Json(serde_json::json!({
                 "success": true,
-                "user": { "id": row.0, "email": row.1, "name": row.2, "role": row.3, "status": row.4, "warehouseId": row.5, "adminEmail": row.6, "requestedAdminEmail": row.7, "createdAt": row.8, "approvedAt": row.9 }
+                "user": {
+                    "id": row.0,
+                    "username": display_username,
+                    "email": row.2,
+                    "name": row.3,
+                    "role": row.4,
+                    "status": row.5,
+                    "warehouseId": row.6,
+                    "adminEmail": row.7,
+                    "requestedAdminEmail": row.8,
+                    "createdAt": row.9,
+                    "approvedAt": row.10
+                }
             })))
         }
         "request_access" => {
@@ -479,12 +513,77 @@ async fn users_action(
         "approve_user" => {
             let target = required(input.target_email, "targetEmail")?;
             let admin = required(input.admin_email, "adminEmail")?;
-            let warehouse_id = format!("wh_{}", admin.split('@').next().unwrap_or("wms"));
+            // 관리자의 실제 warehouse_id 조회
+            let warehouse_id = {
+                let wid = sqlx::query_scalar::<_, Option<String>>("SELECT warehouse_id FROM users WHERE email = $1")
+                    .bind(&admin).fetch_optional(&db).await.map_err(internal_error)?;
+                wid.flatten().unwrap_or_else(|| format!("wh_{}", admin.split('@').next().unwrap_or("wms")))
+            };
+            // 창고가 없으면 생성
+            sqlx::query("INSERT INTO warehouses (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+                .bind(&warehouse_id).bind(&format!("{} 창고", warehouse_id.trim_start_matches("wh_")))
+                .execute(&db).await.map_err(internal_error)?;
             sqlx::query("UPDATE users SET status = 'APPROVED', admin_email = $1, warehouse_id = $2, approved_at = now(), requested_admin_email = NULL WHERE email = $3")
                 .bind(&admin).bind(&warehouse_id).bind(&target).execute(&db).await.map_err(internal_error)?;
             sqlx::query("UPDATE warehouse_access_requests SET status = 'APPROVED' WHERE user_email = $1 AND status = 'PENDING'")
                 .bind(&target).execute(&db).await.map_err(internal_error)?;
             Ok(Json(serde_json::json!({ "success": true, "targetEmail": target, "warehouseId": warehouse_id })))
+        }
+        "approve_admin" => {
+            // 서버 관리자가 창고 관리자 신청을 승인
+            let target = required(input.target_email, "targetEmail")?;
+            let name_part = target.split('@').next().unwrap_or("wms");
+            let warehouse_id = format!("wh_{}", name_part);
+            let warehouse_name = format!("{} 창고", name_part);
+            // 창고가 없으면 먼저 생성
+            sqlx::query(
+                "INSERT INTO warehouses (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING"
+            ).bind(&warehouse_id).bind(&warehouse_name).execute(&db).await.map_err(internal_error)?;
+            let rows = sqlx::query(
+                "UPDATE users SET role = '관리자', status = 'APPROVED', warehouse_id = $1, approved_at = now() WHERE email = $2"
+            ).bind(&warehouse_id).bind(&target).execute(&db).await.map_err(internal_error)?;
+            if rows.rows_affected() == 0 {
+                return Err((StatusCode::NOT_FOUND, "사용자를 찾을 수 없습니다.".to_string()));
+            }
+            Ok(Json(serde_json::json!({ "success": true, "targetEmail": target, "warehouseId": warehouse_id })))
+        }
+        "invite_user" => {
+            // 창고 관리자가 창고지기를 직접 초대/즉시 승인
+            let target = required(input.target_email, "targetEmail")?;
+            let admin = required(input.admin_email, "adminEmail")?;
+            let warehouse_id = {
+                let row = sqlx::query_scalar::<_, Option<String>>("SELECT warehouse_id FROM users WHERE email = $1")
+                    .bind(&admin).fetch_optional(&db).await.map_err(internal_error)?;
+                row.flatten().unwrap_or_else(|| format!("wh_{}", admin.split('@').next().unwrap_or("wms")))
+            };
+            // 이미 존재하면 업데이트, 없으면 새로 생성
+            let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE email = $1")
+                .bind(&target).fetch_one(&db).await.map_err(internal_error)?;
+            if exists > 0 {
+                sqlx::query("UPDATE users SET status = 'APPROVED', admin_email = $1, warehouse_id = $2, approved_at = now() WHERE email = $3")
+                    .bind(&admin).bind(&warehouse_id).bind(&target).execute(&db).await.map_err(internal_error)?;
+            } else {
+                let uname = target.split('@').next().unwrap_or("user").to_string();
+                let salt = SaltString::generate(&mut rand::thread_rng());
+                let phash = Argon2::default().hash_password("123456".as_bytes(), &salt)
+                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "hash fail".to_string()))?.to_string();
+                sqlx::query("INSERT INTO users (username, email, password_hash, name, role, status, admin_email, warehouse_id, approved_at) VALUES ($1,$2,$3,$4,'창고지기','APPROVED',$5,$6,now())")
+                    .bind(&uname).bind(&target).bind(phash).bind(&uname).bind(&admin).bind(&warehouse_id)
+                    .execute(&db).await.map_err(internal_error)?;
+            }
+            Ok(Json(serde_json::json!({ "success": true, "message": format!("'{}' 창고지기가 이 창고로 승인 등록되었습니다.", target) })))
+        }
+        "delete_user" => {
+            let target = required(input.target_email, "targetEmail")?;
+            if target == "wjmals" || target == "wjmals@wms-smartstock.ai" {
+                return Err((StatusCode::FORBIDDEN, "총괄 서버 관리자 계정은 삭제할 수 없습니다.".to_string()));
+            }
+            let result = sqlx::query("DELETE FROM users WHERE email = $1")
+                .bind(&target).execute(&db).await.map_err(internal_error)?;
+            if result.rows_affected() == 0 {
+                return Err((StatusCode::NOT_FOUND, "사용자를 찾을 수 없습니다.".to_string()));
+            }
+            Ok(Json(serde_json::json!({ "success": true, "deletedEmail": target })))
         }
         _ => Err((StatusCode::BAD_REQUEST, "유효하지 않은 요청입니다.".to_string())),
     }
@@ -498,7 +597,7 @@ async fn get_users(
     let action = query.action.unwrap_or_else(|| "list".to_string());
     if action == "get_user" {
         let email = required(query.email, "email")?;
-        let user = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE email = $1")
+        let user = sqlx::query_as::<_, UserRecord>("SELECT id, username, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE email = $1 OR username = $1")
             .bind(email).fetch_optional(&db).await.map_err(internal_error)?
             .ok_or_else(|| (StatusCode::NOT_FOUND, "사용자를 찾을 수 없습니다.".to_string()))?;
         return Ok(Json(serde_json::to_value(user).unwrap_or(Value::Null)));
@@ -509,16 +608,16 @@ async fn get_users(
             "SELECT id, user_email, user_name, requested_at FROM warehouse_access_requests WHERE admin_email = $1 AND status = 'PENDING' ORDER BY requested_at",
         ).bind(&admin).fetch_all(&db).await.map_err(internal_error)?;
         let pending = requests.into_iter().map(|r| serde_json::json!({ "id": r.0, "userEmail": r.1, "userName": r.2, "requestedAt": r.3 })).collect::<Vec<_>>();
-        let members = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE admin_email = $1 AND status = 'APPROVED' ORDER BY name")
+        let members = sqlx::query_as::<_, UserRecord>("SELECT id, username, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE admin_email = $1 AND status = 'APPROVED' ORDER BY name")
             .bind(admin).fetch_all(&db).await.map_err(internal_error)?;
         return Ok(Json(serde_json::json!({ "pendingRequests": pending, "teamMembers": members })));
     }
     if action == "list_admin_requests" {
-        let users = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE role = '관리자' AND status <> 'APPROVED' ORDER BY created_at")
+        let users = sqlx::query_as::<_, UserRecord>("SELECT id, username, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users WHERE (role = '관리자' AND status <> 'APPROVED') OR status = 'PENDING_ADMIN' ORDER BY created_at")
             .fetch_all(&db).await.map_err(internal_error)?;
         return Ok(Json(serde_json::to_value(users).unwrap_or(Value::Null)));
     }
-    let users = sqlx::query_as::<_, UserRecord>("SELECT id, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users ORDER BY created_at")
+    let users = sqlx::query_as::<_, UserRecord>("SELECT id, username, email, name, role, status, warehouse_id, admin_email, requested_admin_email, created_at, approved_at FROM users ORDER BY created_at")
         .fetch_all(&db).await.map_err(internal_error)?;
     Ok(Json(serde_json::to_value(users).unwrap_or(Value::Null)))
 }
@@ -707,13 +806,61 @@ async fn analyze_monitor_image(
     let api_key = env::var("GROQ_API_KEY").map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "GROQ_API_KEY is not configured".to_string()))?;
     let warehouse_id = input.warehouse_id.unwrap_or_else(|| "wh_wjmals".to_string());
     let image_url = if input.image.starts_with("data:") { input.image.clone() } else { format!("data:image/jpeg;base64,{}", input.image) };
-    let prompt = format!("당신은 창고 재고 관리 AI입니다. 이미지에서 품목과 재고 상태를 분석하고 JSON만 반환하세요. 우선 품목: {}. 필드: itemName, estimatedQuantity, unit, status(shortage|safe|overstock), statusLabel, confidence(0-100), recommendation, reason.", input.item_name.as_deref().unwrap_or("없음"));
+    let references = if let Some(item_name) = input.item_name.as_deref() {
+        let matching = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT name, description, thumbnail FROM item_references WHERE warehouse_id = $1 AND lower(name) = lower($2) ORDER BY created_at DESC LIMIT 3",
+        )
+        .bind(&warehouse_id)
+        .bind(item_name)
+        .fetch_all(&db)
+        .await
+        .map_err(internal_error)?;
+        if matching.is_empty() {
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT name, description, thumbnail FROM item_references WHERE warehouse_id = $1 ORDER BY created_at DESC LIMIT 3",
+            )
+            .bind(&warehouse_id)
+            .fetch_all(&db)
+            .await
+            .map_err(internal_error)?
+        } else {
+            matching
+        }
+    } else {
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT name, description, thumbnail FROM item_references WHERE warehouse_id = $1 ORDER BY created_at DESC LIMIT 3",
+        )
+        .bind(&warehouse_id)
+        .fetch_all(&db)
+        .await
+        .map_err(internal_error)?
+    };
+    let prompt = format!("당신은 창고 재고 관리 AI입니다. 현재 이미지의 품목과 재고 상태를 분석하고 JSON만 반환하세요. 아래 레퍼런스 이미지가 있으면 현재 이미지와 비교하여 품목을 식별하세요. 레퍼런스는 학습 데이터가 아니라 이번 분석을 위한 참고 자료입니다. 우선 품목: {}. 필드: itemName, estimatedQuantity, unit, status(shortage|safe|overstock), statusLabel, confidence(0-100), recommendation, reason.", input.item_name.as_deref().unwrap_or("없음"));
+    let mut content = vec![serde_json::json!({ "type": "text", "text": prompt })];
+    for (name, description, thumbnail) in references {
+        if thumbnail.trim().is_empty() {
+            continue;
+        }
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": format!("레퍼런스 품목: {}\n설명: {}", name, description),
+        }));
+        content.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": thumbnail },
+        }));
+    }
+    content.push(serde_json::json!({
+        "type": "text",
+        "text": "이제 분석할 현재 카메라 이미지입니다.",
+    }));
+    content.push(serde_json::json!({
+        "type": "image_url",
+        "image_url": { "url": image_url },
+    }));
     let payload = serde_json::json!({
         "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-        "messages": [{ "role": "user", "content": [
-            { "type": "text", "text": prompt },
-            { "type": "image_url", "image_url": { "url": image_url } }
-        ]}],
+        "messages": [{ "role": "user", "content": content }],
         "max_tokens": 512,
         "temperature": 0.1
     });

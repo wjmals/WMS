@@ -1,10 +1,10 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { firebaseLogin, firebaseSignup } from '../lib/firebase-client';
 
 export interface User {
   id: string;
+  username?: string;
   email: string;
   name: string;
   role: '서버 관리자' | '관리자' | '창고지기' | string;
@@ -16,7 +16,7 @@ export interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password?: string) => Promise<boolean>;
+  login: (emailOrUsername: string, password?: string) => Promise<boolean>;
   signup: (email: string, password?: string, name?: string, role?: string, adminEmail?: string) => Promise<boolean>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -32,11 +32,12 @@ const AuthContext = createContext<AuthContextType>({
   isLoading: true,
 });
 
+const API_BASE = '/api';
+
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // DB에서 최신 유저 데이터 갱신
   const refreshUser = useCallback(async () => {
     const savedUser = localStorage.getItem('wms_auth_user');
     if (!savedUser) {
@@ -46,27 +47,30 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       const parsed: User = JSON.parse(savedUser);
-      // 로컬 스토리지 데이터로 우선 빠른 복원
       setUser(parsed);
       setIsLoading(false);
 
       // 백그라운드에서 최신 정보 동기화
-      const res = await fetch(`/api/users?action=get_user&email=${encodeURIComponent(parsed.email)}`);
+      const res = await fetch(`${API_BASE}/users?action=get_user&email=${encodeURIComponent(parsed.email)}`);
       if (res.ok) {
         const dbUser = await res.json();
-        const updated: User = {
-          id: dbUser.id || parsed.id,
-          email: dbUser.email,
-          name: dbUser.name,
-          role: dbUser.role || '창고지기',
-          status: dbUser.status || 'APPROVED',
-          warehouseId: dbUser.warehouseId,
-          adminEmail: dbUser.adminEmail,
-          requestedAdminEmail: dbUser.requestedAdminEmail,
-        };
-        setUser(updated);
-        localStorage.setItem('wms_auth_user', JSON.stringify(updated));
-      } else {
+        if (dbUser && !dbUser.error) {
+          const updated: User = {
+            id: dbUser.id || parsed.id,
+            username: dbUser.username || parsed.username,
+            email: dbUser.email,
+            name: dbUser.name,
+            role: dbUser.role || '창고지기',
+            status: dbUser.status || 'APPROVED',
+            warehouseId: dbUser.warehouseId,
+            adminEmail: dbUser.adminEmail,
+            requestedAdminEmail: dbUser.requestedAdminEmail,
+          };
+          setUser(updated);
+          localStorage.setItem('wms_auth_user', JSON.stringify(updated));
+        }
+      } else if (res.status === 404) {
+        // 계정 삭제됨 → 강제 로그아웃
         setUser(null);
         localStorage.removeItem('wms_auth_user');
       }
@@ -78,7 +82,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   useEffect(() => {
-    // 초기 마운트 시 localStorage에서 유저 복원
     const savedUser = localStorage.getItem('wms_auth_user');
     if (savedUser) {
       try {
@@ -89,24 +92,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     refreshUser();
   }, [refreshUser]);
 
-  const login = async (emailInput: string, passwordInput?: string): Promise<boolean> => {
+  const login = async (emailOrUsername: string, passwordInput?: string): Promise<boolean> => {
     try {
-      if (emailInput !== 'wjmals' && passwordInput) {
-        await firebaseLogin(emailInput, passwordInput);
-      }
-      const res = await fetch('/api/users', {
+      const res = await fetch(`${API_BASE}/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'login',
-          email: emailInput,
-          username: emailInput,
+          username: emailOrUsername,
+          email: emailOrUsername,
           password: passwordInput,
         }),
       });
 
       if (!res.ok) {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         alert(errData.error || '로그인에 실패했습니다.');
         return false;
       }
@@ -115,6 +115,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (data.success && data.user) {
         const loggedUser: User = {
           id: data.user.id || `usr_${Date.now()}`,
+          username: data.user.username,
           email: data.user.email,
           name: data.user.name,
           role: data.user.role || '창고지기',
@@ -127,6 +128,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         localStorage.setItem('wms_auth_user', JSON.stringify(loggedUser));
         return true;
       }
+      alert('로그인에 실패했습니다.');
       return false;
     } catch (err) {
       console.error('Login error:', err);
@@ -135,17 +137,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  const signup = async (emailInput: string, passwordInput?: string, nameInput?: string, roleInput?: string, adminEmailInput?: string): Promise<boolean> => {
+  const signup = async (
+    emailInput: string,
+    passwordInput?: string,
+    nameInput?: string,
+    roleInput?: string,
+    adminEmailInput?: string
+  ): Promise<boolean> => {
     try {
-      if (passwordInput) {
-        await firebaseSignup(emailInput, passwordInput);
-      }
-      const res = await fetch('/api/users', {
+      const res = await fetch(`${API_BASE}/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'signup',
           email: emailInput,
+          username: emailInput.split('@')[0],
           password: passwordInput,
           name: nameInput,
           role: roleInput || '창고지기',
@@ -154,17 +160,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       });
 
       if (!res.ok) {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         const error = new Error(errData.error || '회원가입 실패') as Error & { code?: string };
         throw error;
       }
 
       const data = await res.json();
-      if (data.success && data.user) {
-        // 회원가입은 승인 신청만 처리하고, 로그인은 사용자가 직접 진행한다.
-        return true;
-      }
-      return false;
+      return !!(data.success && data.user);
     } catch (err) {
       console.error('Signup error:', err);
       throw err;
