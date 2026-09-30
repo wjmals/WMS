@@ -1,115 +1,88 @@
-# 📦 AI-Native 스마트 물류 및 창고 관리 시스템 (Smart WMS)
+# SmartStock AI WMS
 
-> **Groq LLaMA-4 Vision AI**, **스마트 바코드 스캐너**, **실재고 동적 공실률 산출**, **보안 인증 가드 & 2단계 역할 권한 체계**를 탑재한 차세대 스마트 물류 및 재고 관리 시스템입니다.
+창고별 재고, 구역, 배송과 이미지 모니터링을 관리하는 웹 애플리케이션입니다. 운영 데이터는 Rust API와 PostgreSQL에 저장됩니다.
 
----
+## 현재 기능
 
-## 🌟 주요 핵심 기능 (Key Features)
+- 사용자 가입, 로그인, 관리자·창고지기 승인
+- 현재 재고와 안전재고 조회·수정, 상태 분류
+- 품목명 또는 ID 검색과 수량 조정
+- 창고 구역 생성·조회·수정·삭제
+- 배송 등록, 상태 전이, 완료 24시간 후 목록 제외
+- 창고별 비전 레퍼런스와 Groq Vision 모니터링
 
-### 1. 📷 스마트 바코드 스캐너 & 실시간 재고 조정 (`/barcode`)
-- **실시간 카메라 / 바코드 리더기 연동**: 스마트폰 및 PC 카메라, 바코드 리더기를 통해 SKU/바코드 스캔.
-- **창고 보관 구역 위치 조회**: 스캔 즉시 담당 창고 구역 (예: `A구역 - 냉동 보관 01-A`) 및 보관 상태 파악.
-- **실시간 입출고 조정 (+/- 톤)**: 현장에서 스캔 후 수량 조정 클릭 시 Rust API를 통해 PostgreSQL에 즉시 반영.
+바코드 화면의 카메라는 미리보기 용도이며 영상의 실제 바코드 판독은 구현되어 있지 않습니다. 리포트와 AI 결과는 운영 성과나 예측 정확도가 검증된 것을 의미하지 않습니다.
 
-### 2. 📹 Groq LLaMA-4 Vision AI 실시간 CCTV 감지 (`/monitor`)
-- **멀티모달 비전 AI 모델 연동**: Groq SDK 기반 `meta-llama/llama-4-scout-17b-16e-instruct` 모델 적용.
-- **품목 사전 학습 등록 (`/api/vision`)**: 학습용 레퍼런스 이미지를 등록하여 현장 비전 AI 식별 정확도 향상.
-- **실시간 비전 감지 & DB 자동 연동**: 카메라 영상 캡처 시 AI가 품목 수량을 추정하고 DB 및 창고 공실률에 즉시 반영.
+### 화면
 
-### 3. 🏭 실재고 기반 창고 공실률 동적 산출 (`/api/zones`)
-- **실시간 용량 산출 (`emptyRatio`)**: 창고 구역별 실제 보관 중인 품목 수량(`current` 톤)을 실시간 합산하여 공실률(0% ~ 100%) 계산.
-- **수급 상태 자동 판정**: 공실률 및 재고량에 따라 `정상`, `재고부족 (높은 공실률)`, `과다점유 (낮은 공실률)` 자동 표기.
+| 경로 | 용도 |
+|---|---|
+| `/` | 대시보드 및 재고 요약 |
+| `/login`, `/signup` | 로그인 및 역할별 가입 |
+| `/barcode` | 품목 ID/이름 검색, 재고 조회와 수량 조정 |
+| `/delivery` | 배송 등록과 상태 전이 |
+| `/monitor` | 이미지 분석, 레퍼런스 관리와 이력 조회 |
+| `/report` | 현재 저장된 재고 위험 정보 |
 
-### 4. 🔒 보안 가드 & 2단계 역할별 권한 제어 (`AuthGuard`)
-- **비로그인 데이터 접근 차단**: 로그인하지 않은 사용자는 서비스 메인, 재고 현황, AI 리포트, 배송 관리, 실시간 모니터링 접근이 차단되며 로그인 화면(`/login`)으로 자동 리다이렉트.
-- **2단계 전용 권한 구조**:
-  - **총괄 관리자 (`관리자`)**: 전체 서비스 접근, 품목/배송건 삭제 권한, 창고 구역 배치 및 AI 카메라 학습 데이터 설정 제어.
-  - **창고지기**: 바코드 스캔, 실시간 재고 조회, 수량 입출고 조정 및 AI 리포트 조회 권한 (삭제 및 시스템 설정 제한).
+## 기술 구성
 
-### 5. 🚚 스마트 배송 관리 시스템 (`/delivery`)
-- **국내 전 택배사 자동 판별**: 운송장 번호만 입력하면 스마트택배 API 추천 엔진으로 택배사 자동 판별.
-- **배송 완료 24시간 자동 만료 관리**: 배송 완료 후 24시간이 지나면 DB 및 화면에서 자동 정리.
-
-### 6. 📊 30일 시계열 AI 수요 예측 & 리포트 (`/report`)
-- **시계열 출고 트렌드 분석**: 최근 30일 소비 속도를 분석하여 결품 위험 예상 시점(**D-Day**) 파악.
-- **AI 권장 긴급 발주량(톤)**: 안전재고 미달 방지를 위한 최적 권장 발주량 자동 산출.
-
----
-
-## 🛠 기술 스택 (Tech Stack)
-
-| 구분 | 적용 기술 및 라이브러리 | 상세 설명 |
-| :--- | :--- | :--- |
-| **개발 언어** | **TypeScript, JavaScript** | Type-safe 웹 및 서버리스 API 개발 |
-| **프레임워크** | **Next.js 14 (App Router), React 18** | SSR/CSR 하이브리드, Edge Serverless API |
-| **UI & 스타일링** | **Tailwind CSS, Framer Motion** | Apple 스타일 모던 인터페이스 및 반응형 디자인 |
-| **데이터 시각화** | **Recharts** | 30일 시계열 수요 예측 차트 |
-| **AI 비전 모델** | **Groq LLaMA-4 Scout Vision** | `meta-llama/llama-4-scout-17b-16e-instruct` |
-| **데이터베이스** | **PostgreSQL 16** | Rust API가 SQLx를 통해 재고, 사용자, 구역, 배송, 모니터링 데이터를 관리 |
-| **배포 & 인프라** | **Vercel Cloud & GitHub** | Vercel 호스팅, Git 버전 관리 및 자동 배포 |
-
-### Vercel 환경변수
-
-현재 로그인, 회원가입, 재고 및 운영 데이터는 Rust API와 PostgreSQL을 사용합니다.
-배포 환경에는 다음 값을 등록해야 합니다.
-
-```env
-DATABASE_URL=postgres://<user>:<password>@<host>:5432/<database>
-RUST_API_URL=https://<rust-api-host>
-GROQ_API_KEY=<required-for-ai-monitoring>
+```text
+Browser -> Next.js frontend -> Rust Axum API -> PostgreSQL
+                                             -> Groq Vision (모니터 분석)
 ```
 
-로컬 Docker 구성은 `docker-compose.yml`과 `start-wms.sh`를 기준으로 합니다.
+- `frontend/`: Next.js 14, React 18, TypeScript
+- `rust-backend/`: Axum, SQLx, PostgreSQL 16
+- `admin_console/`, `cv_client/`: 별도 Python 도구
 
-## 📚 프로젝트 문서
+주요 코드 위치는 `frontend/app/`(화면 및 Next.js API 프록시), `rust-backend/src/main.rs`(API와 로직), `rust-backend/schema.sql`(DB 정의)입니다. API 요청·응답 예시는 [API 명세서](docs/API_명세서.md)에 있습니다.
 
-- [API 명세서](docs/API_명세서.md): Rust API 엔드포인트, 요청/응답, 상태 코드, 데이터 모델
-- [기능 명세서](docs/기능_명세서.md): 역할별 기능, 승인 흐름, 업무 규칙, 운영 요구사항 및 인수 테스트
-- [DB 구조도](docs/DB_구조도.md): ER 다이어그램, 테이블별 컬럼 설명, 인덱스와 제약조건
-- [데이터셋 구조도](docs/데이터셋_구조도.md): 엔터티별 예시 JSON, 값 범위, 이미지 인코딩 규칙, 창고 분리 규칙
-- [파일 구조도](docs/파일_구조도.md): 저장소 폴더/파일 구조 전체 개요
-- [프로젝트 제안서](docs/프로젝트_제안서.md): Amazon Working Backwards / 6-Pager 형식의 배경, 목표, 일정, 위험 관리, Q&A
+## 로컬 실행
 
----
+사전 조건: Docker, Node.js/npm, Rust/Cargo가 설치되어 있어야 합니다.
 
-## 📊 안전재고(Safe Stock) 파악 및 산출 메커니즘
+1. 프런트엔드 의존성을 설치합니다.
 
-### 1) 안전재고의 정의
-안전재고는 급격한 수요 변동이나 입고 지연에 대비하여 **창고에 항상 유지해야 하는 최저 기준 재고량(톤)**입니다.
+   ```bash
+   cd frontend
+   npm install
+   cd ..
+   ```
 
-### 2) 상태 자동 판정 알고리즘
-* 🔴 **재고 부족 (`shortage`)**: `현재 실재고 < 안전재고 × 50%` ➔ **긴급 추가 발주 필요**
-* 🟢 **안전 재고 (`safe`)**: `안전재고 × 50% ≤ 현재 실재고 ≤ 안전재고 × 200%` ➔ **적정 수급 유지**
-* 🟡 **재고 과다 (`overstock`)**: `현재 실재고 > 안전재고 × 200%` ➔ **창고 점유율 초과 / 조기 출하 필요**
+2. PostgreSQL을 시작합니다. 새 볼륨은 `rust-backend/schema.sql`로 초기화됩니다.
 
-### 3) 안전재고 파악 화면
-1. **메인 대시보드 (`/`)**: 전체 안전 재고 유지 품목 수 및 부족/과다 상태 실시간 확인.
-2. **바코드 스캐너 (`/barcode`)**: 스캔 시 현재 재고, 안전 재고, 부족/초과 톤수 및 AI 조치 가이드 확인.
-3. **AI 리포트 (`/report`)**: 결품 위험 D-Day 및 권장 긴급 발주량 파악.
-4. **CCTV 관제 (`/monitor`)**: 카메라 비전 감지 시 수량 부족 알림 및 DB 실시간 갱신.
+   ```bash
+   docker compose up -d postgres
+   ```
 
----
+3. Rust API를 별도 터미널에서 실행합니다.
 
-## 🚀 실행 가이드 (Getting Started)
+   ```bash
+   cd rust-backend
+   DATABASE_URL=postgres://wms:wms_password@localhost:5432/wms cargo run
+   ```
 
-### 1. 저장소 클론
-```bash
-git clone https://github.com/wjmals/WMS.git
-cd WMS/frontend
-```
+4. 프런트엔드를 저장소 루트에서 실행합니다.
 
-### 2. 패키지 설치
-```bash
-npm install
-```
+   ```bash
+   npm run dev
+   ```
 
-### 3. 개발 서버 실행
-```bash
-npm run dev
-```
-브라우저에서 `http://localhost:3000` 접속.
+5. 브라우저에서 `http://localhost:3000`을 엽니다.
 
----
+### 환경 설정
 
-## 📄 라이선스 (License)
-This project is licensed under the MIT License.
+- `DATABASE_URL`: Rust API PostgreSQL 연결 문자열. 로컬 Compose 기본값은 `postgres://wms:wms_password@localhost:5432/wms`입니다.
+- `RUST_API_URL`: Next.js 프록시의 Rust API 주소. 기본값은 `http://localhost:8080`입니다.
+- `GROQ_API_KEY`: `/api/monitor` 이미지 분석에 필요하며, 계정이 호출 모델을 사용할 수 있어야 합니다.
+
+`start-wms.sh`는 특정 로컬 경로와 빌드된 Rust 실행 파일을 가정합니다. 다른 환경에서는 위 단계를 따라 실행하거나 스크립트의 경로를 조정하십시오.
+
+## 문서
+
+- [프로젝트 제안서](docs/프로젝트_제안서.md): 6면 제안서
+- [기능 명세서](docs/기능_명세서.md): 구현 기능과 주요 제한사항
+- [API 명세서](docs/API_명세서.md): 엔드포인트와 요청 형식
+- [DB 구조도](docs/DB_구조도.md): 테이블 관계, 주요 컬럼과 제약
+- [파일 구조도](docs/파일_구조도.md): 주요 디렉터리와 코드 위치
+- 실제 DB 정의: `rust-backend/schema.sql`
