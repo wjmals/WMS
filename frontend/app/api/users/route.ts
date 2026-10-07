@@ -7,7 +7,10 @@ const RUST_API = process.env.RUST_API_URL || 'http://localhost:8080';
 
 async function proxyToRust(req: NextRequest, method: string, url: URL): Promise<NextResponse> {
   const targetUrl = `${RUST_API}${url.pathname}${url.search}`;
-  const init: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const authorization = req.headers.get('authorization');
+  if (authorization) headers.Authorization = authorization;
+  const init: RequestInit = { method, headers };
 
   if (method !== 'GET' && method !== 'DELETE') {
     try {
@@ -26,7 +29,22 @@ async function proxyToRust(req: NextRequest, method: string, url: URL): Promise<
     body = { error: text || '서버 오류' };
   }
 
-  return NextResponse.json(body, { status: res.status });
+  let sessionToken: string | undefined;
+  if (method === 'POST' && res.ok && body && typeof body === 'object' && 'token' in body && typeof body.token === 'string') {
+    sessionToken = body.token;
+    delete (body as Record<string, unknown>).token;
+  }
+  const response = NextResponse.json(body, { status: res.status });
+  if (sessionToken) {
+    response.cookies.set('wms_session', sessionToken, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      path: '/api',
+      maxAge: 60 * 60 * 12,
+    });
+  }
+  return response;
 }
 
 export async function GET(req: NextRequest) {

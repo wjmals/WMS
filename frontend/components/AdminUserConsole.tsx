@@ -81,7 +81,7 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
     }
   };
 
-  // 관리자가 창고지기 이메일 직접 입력하여 추가 & 승인 (Confirm 추가)
+  // Approve an existing warehouse-keeper account for this warehouse.
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail) return;
@@ -189,14 +189,14 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
           </div>
         )}
 
-        {/* 1. 이메일 직접 입력하여 창고지기 멤버 추가 */}
+        {/* 1. Approve a registered warehouse keeper */}
         <div className="bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/40 p-5 rounded-2xl space-y-3">
           <h4 className="text-xs font-bold uppercase text-primary flex items-center gap-2">
             <UserPlus className="w-4 h-4" />
-            창고지기 이메일로 팀원 직접 추가 및 승인
+            가입한 창고지기 승인
           </h4>
           <p className="text-xs text-textMuted">
-            창고지기의 이메일을 입력하여 추가하면 해당 창고지기도 동일한 창고 데이터를 확인 및 수량 조정을 할 수 있습니다.
+            먼저 창고지기 계정으로 가입한 이메일을 입력하면 이 창고의 재고를 조회하고 조정할 수 있도록 승인합니다.
           </p>
           <form onSubmit={handleInvite} className="flex gap-2">
             <div className="relative flex-1">
@@ -206,7 +206,7 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
                 required
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
-                placeholder="창고지기 이메일 입력 (예: manager@company.com)"
+                placeholder="가입한 창고지기 이메일"
                 className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-primary/20"
               />
             </div>
@@ -216,7 +216,7 @@ export default function AdminUserConsole({ isOpen, onClose }: { isOpen: boolean;
               className="px-5 py-2.5 bg-primary hover:bg-blue-600 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 flex items-center gap-1.5"
             >
               <UserCheck className="w-4 h-4" />
-              멤버 추가
+              승인
             </button>
           </form>
         </div>

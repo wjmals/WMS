@@ -7,7 +7,10 @@ const RUST_API = process.env.RUST_API_URL || 'http://localhost:8080';
 async function proxy(req: NextRequest, method: string): Promise<NextResponse> {
   const url = new URL(req.url);
   const targetUrl = `${RUST_API}${url.pathname}${url.search}`;
-  const init: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const authorization = req.headers.get('authorization');
+  if (authorization) headers.Authorization = authorization;
+  const init: RequestInit = { method, headers };
   if (method !== 'GET') {
     try { init.body = await req.text(); } catch {}
   }
@@ -21,7 +24,7 @@ async function proxy(req: NextRequest, method: string): Promise<NextResponse> {
 // GET: 최근 분석 이력 조회 → Rust 백엔드로 프록시
 export async function GET(req: NextRequest) {
   try { return await proxy(req, 'GET'); }
-  catch { return NextResponse.json([], { status: 200 }); }
+  catch { return NextResponse.json({ error: '모니터 이력을 불러오지 못했습니다.' }, { status: 503 }); }
 }
 
 // POST: Rust API가 창고별 레퍼런스와 함께 Groq Vision 분석을 처리
@@ -37,7 +40,7 @@ export async function POST(req: NextRequest) {
     return await proxy(
       new NextRequest(req.url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(req.headers.get('authorization') ? { Authorization: req.headers.get('authorization')! } : {}) },
         body: JSON.stringify(body),
       }),
       'POST',

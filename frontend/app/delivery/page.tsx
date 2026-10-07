@@ -3,20 +3,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Truck, Package, Search, Plus, Trash2, RefreshCw, CheckCircle2, 
-  Clock, ArrowRight, MapPin, AlertCircle, Sparkles, ChevronRight, X, Info
+  Clock, ArrowRight, MapPin, AlertCircle, Sparkles, ChevronRight, X, Info, Radio
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 
 type TrackingStep = {
-  time: string;
+  timeString?: string;
+  time?: string;
   where: string;
   kind: string;
   tel?: string;
 };
 
 type DeliveryItem = {
-  id: number;
+  id: string;
   invoice_no: string;
   carrier_code: string;
   carrier_name: string;
@@ -67,11 +68,13 @@ export default function DeliveryManagementPage() {
   const [itemNameInput, setItemNameInput] = useState('');
   const [receiverInput, setReceiverInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [trackingId, setTrackingId] = useState<string | null>(null);
+  const [trackingError, setTrackingError] = useState<{ id: string; message: string } | null>(null);
 
   // 상세 모달
   const [selectedItem, setSelectedItem] = useState<DeliveryItem | null>(null);
 
-  // 배송 목록 불러오기 (택배사 API 실시간 자동 동기화)
+  // Refresh the locally stored delivery records.
   const fetchDeliveries = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
@@ -85,44 +88,40 @@ export default function DeliveryManagementPage() {
     }
   }, []);
 
+  const refreshCarrierTracking = async (item: DeliveryItem) => {
+    setTrackingId(String(item.id));
+    setTrackingError(null);
+    try {
+      const response = await fetch('/api/delivery/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '택배사 배송 조회에 실패했습니다.');
+      await fetchDeliveries(false);
+      if (selectedItem?.id === item.id) {
+        setSelectedItem((current) => current ? { ...current, status: result.status, status_code: result.statusCode, tracking_details: result.trackingDetails, current_location: result.currentLocation } : null);
+      }
+    } catch (error) {
+      setTrackingError({ id: String(item.id), message: error instanceof Error ? error.message : '택배사 배송 조회에 실패했습니다.' });
+    } finally {
+      setTrackingId(null);
+    }
+  };
+
   useEffect(() => {
     fetchDeliveries();
-    // 10초마다 백그라운드에서 실시간 택배사 API 자동 동기화
+    // Keep shipment records current without polling the database excessively.
     const autoSyncTimer = setInterval(() => {
       fetchDeliveries(false);
-    }, 10000);
+    }, 30000);
     return () => clearInterval(autoSyncTimer);
   }, [fetchDeliveries]);
 
-  const [detectedCarrier, setDetectedCarrier] = useState<{ code: string; name: string }>({ code: '04', name: 'CJ대한통운' });
+  const selectedCarrier = ({ '01': '우체국택배', '04': 'CJ대한통운', '05': '한진택배', '06': '로젠택배', '08': '롯데택배', '11': '일양로지스', '22': '대신택배', '23': '경동택배' } as Record<string, string>)[carrierInput] || 'CJ대한통운';
 
-  // 운송장 입력 시 택배사 실시간 100% 자동 감지
-  const handleInvoiceChange = async (val: string) => {
-    setInvoiceInput(val);
-    const clean = val.replace(/[^0-9]/g, '');
-    if (clean.length >= 8) {
-      try {
-        const res = await fetch(`/api/delivery?detect=${clean}`);
-        if (res.ok) {
-          const detected = await res.json();
-          if (detected && detected.name) {
-            setDetectedCarrier(detected);
-            setCarrierInput(detected.code);
-            return;
-          }
-        }
-      } catch {}
-    }
-
-    // fallback 로컬 규칙
-    if (clean.length === 13) setDetectedCarrier({ code: '01', name: '우체국택배' });
-    else if (clean.length === 10) setDetectedCarrier({ code: '05', name: '한진택배' });
-    else if (clean.length === 11) setDetectedCarrier({ code: '06', name: '로젠택배' });
-    else if (clean.startsWith('2') || clean.startsWith('3')) setDetectedCarrier({ code: '08', name: '롯데택배' });
-    else setDetectedCarrier({ code: '04', name: 'CJ대한통운' });
-  };
-
-  // 등록 (택배사 자동 판별 적용 & 즉시 UI반영)
+  // Create a shipment using the carrier selected by the user.
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!invoiceInput.trim()) return;
@@ -134,8 +133,8 @@ export default function DeliveryManagementPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           invoice_no: invoiceInput.trim(),
-          carrier_code: detectedCarrier.code,
-          carrier_name: detectedCarrier.name,
+          carrier_code: carrierInput,
+          carrier_name: selectedCarrier,
           item_name: itemNameInput.trim() || '출고 물품',
           receiver_name: receiverInput.trim() || '고객님',
         }),
@@ -163,7 +162,7 @@ export default function DeliveryManagementPage() {
   };
 
   // 삭제 (즉시 UI반영)
-  const handleDelete = async (id: number, invoiceNo: string) => {
+  const handleDelete = async (id: string, invoiceNo: string) => {
     if (!confirm(`운송장 [${invoiceNo}] 배송건을 목록에서 삭제하시겠습니까?`)) return;
     setDeliveries(prev => prev.filter(item => item.id !== id));
     try {
@@ -224,10 +223,10 @@ export default function DeliveryManagementPage() {
             DELIVERY TRACKING & WMS LOGISTICS
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-textMain dark:text-white">
-            실시간 배송 관리 및 운송장 추적
+            배송 기록 및 상태 관리
           </h1>
           <p className="text-sm text-textMuted mt-1">
-            스마트택배 API 연동 기반 실시간 운송장 추적 • 배송 완료건은 24시간 후 자동 정리됩니다.
+            운송장 등록과 상태 수동 변경 • 외부 택배사 실시간 조회는 연동되지 않습니다.
           </p>
         </div>
 
@@ -285,7 +284,7 @@ export default function DeliveryManagementPage() {
           <div>
             <p className="text-xs font-semibold text-textMuted uppercase">운송 관제 상태</p>
             <h3 className="text-sm font-bold text-blue-600 mt-1">100% 정상 작동</h3>
-            <span className="text-[11px] text-textMuted">실시간 배송 추적 중</span>
+            <span className="text-[11px] text-textMuted">배송 상태 기록</span>
           </div>
           <div className="w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center text-primary">
             <Sparkles size={24} />
@@ -484,6 +483,9 @@ export default function DeliveryManagementPage() {
                 </div>
 
                 {/* 하단 액션 버튼 */}
+                {trackingError?.id === String(item.id) && (
+                  <p role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{trackingError.message}</p>
+                )}
                 <div className="flex justify-between items-center pt-3 border-t border-gray-100 dark:border-gray-800">
                   <div className="flex items-center gap-2">
                     <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
@@ -499,6 +501,14 @@ export default function DeliveryManagementPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => refreshCarrierTracking(item)}
+                      disabled={trackingId !== null}
+                      className="px-3.5 py-1.5 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 rounded-xl text-xs font-semibold disabled:opacity-50 flex items-center gap-1"
+                    >
+                      <Radio size={14} className={trackingId === String(item.id) ? 'animate-pulse' : ''} />
+                      {trackingId === String(item.id) ? '조회 중...' : '택배사 실시간 조회'}
+                    </button>
                     <button
                       onClick={() => setSelectedItem(item)}
                       className="px-3.5 py-1.5 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 border border-gray-200 dark:border-gray-700 text-textMain dark:text-gray-200 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1"
@@ -559,20 +569,23 @@ export default function DeliveryManagementPage() {
                     required
                     placeholder="예: 658291048210 (CJ대한통운), 120485930219 (롯데)"
                     value={invoiceInput}
-                    onChange={(e) => handleInvoiceChange(e.target.value)}
+                    onChange={(e) => setInvoiceInput(e.target.value)}
                     className="w-full px-4 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20"
                   />
                   
-                  {/* 실시간 택배사 자동 감지 결과 뱃지 */}
-                  <div className="mt-2 flex items-center justify-between p-3 bg-blue-50/70 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/50 rounded-xl">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                      <span className="text-xs text-textMuted">택배사 자동 판별:</span>
-                      <strong className="text-sm font-bold text-primary">{detectedCarrier.name}</strong>
-                    </div>
-                    <span className="text-[11px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 rounded-md font-semibold">
-                      스마트 자동 감지
-                    </span>
+                  <div className="mt-2">
+                    <label className="text-xs font-semibold text-textMuted block mb-1">택배사 선택</label>
+                    <select value={carrierInput} onChange={(event) => setCarrierInput(event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-semibold">
+                      <option value="01">우체국택배</option>
+                      <option value="04">CJ대한통운</option>
+                      <option value="05">한진택배</option>
+                      <option value="06">로젠택배</option>
+                      <option value="08">롯데택배</option>
+                      <option value="11">일양로지스</option>
+                      <option value="22">대신택배</option>
+                      <option value="23">경동택배</option>
+                    </select>
+                    <p className="text-[11px] text-textMuted mt-1">운송장 번호만으로 택배사를 신뢰성 있게 판별할 수 없어 직접 선택합니다.</p>
                   </div>
                 </div>
 
@@ -688,7 +701,7 @@ export default function DeliveryManagementPage() {
                             <span className="text-[10px] font-bold text-primary uppercase">
                               STEP 0{idx + 1} • {s.kind}
                             </span>
-                            <span className="text-[11px] text-gray-400 whitespace-nowrap">{s.time}</span>
+                            <span className="text-[11px] text-gray-400 whitespace-nowrap">{s.timeString || s.time || ''}</span>
                           </div>
                           <p className="text-xs text-textMuted mt-1">{s.where} {s.tel && `(${s.tel})`}</p>
                         </div>

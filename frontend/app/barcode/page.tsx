@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import { BrowserMultiFormatReader, IScannerControls } from '@zxing/browser';
+import JsBarcode from 'jsbarcode';
 import {
   Camera,
   QrCode,
@@ -8,8 +10,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   PackageCheck,
-  Plus,
-  Minus,
   RefreshCw,
   Warehouse,
   ArrowUpRight,
@@ -18,12 +18,17 @@ import {
   Zap
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
 
 interface InventoryItem {
   id: string;
   name: string;
+  barcode?: string | null;
   current: number;
   safe: number;
+  unit: string;
+  packageUnit?: string | null;
+  packageSize?: number;
   status: string;
   statusLabel: string;
   diffText: string;
@@ -32,19 +37,24 @@ interface InventoryItem {
   date: string;
 }
 
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] || character);
+}
+
 export default function BarcodeScannerPage() {
   const { user } = useAuth();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [barcodeInput, setBarcodeInput] = useState('');
   const [isCameraActive, setIsCameraActive] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [adjustAmount, setAdjustAmount] = useState<number>(100);
+  const [adjustAmount, setAdjustAmount] = useState<number>(1);
+  const [adjustUnit, setAdjustUnit] = useState<'base' | 'package'>('base');
   const [updateMsg, setUpdateMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const scannerControlsRef = useRef<IScannerControls | null>(null);
+  const lastScanRef = useRef<{ value: string; at: number }>({ value: '', at: 0 });
 
   // Fetch items from DB
   const fetchItems = async () => {
@@ -53,9 +63,10 @@ export default function BarcodeScannerPage() {
       const res = await fetch(`/api/inventory?warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`);
       if (res.ok) {
         const data = await res.json();
-        setItems(data);
-        if (data.length > 0 && !selectedItem) {
-          setSelectedItem(data[0]);
+        const normalizedItems = normalizeApiNumbers(data);
+        setItems(normalizedItems);
+        if (normalizedItems.length > 0 && !selectedItem) {
+          setSelectedItem(normalizedItems[0]);
         }
       }
     } catch (err) {
@@ -71,38 +82,50 @@ export default function BarcodeScannerPage() {
 
   // Handle camera start/stop
   const startCamera = async () => {
-    try {
-      setIsCameraActive(true);
-      setScanning(true);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      console.error('카메라를 활성화할 수 없습니다:', err);
-      setUpdateMsg({ type: 'error', text: '카메라 접근 권한이 없거나 지원되지 않는 브라우저입니다.' });
-      setIsCameraActive(false);
-      setScanning(false);
-    }
+    setUpdateMsg(null);
+    setIsCameraActive(true);
   };
 
   const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
+    scannerControlsRef.current?.stop();
+    scannerControlsRef.current = null;
     setIsCameraActive(false);
-    setScanning(false);
   };
 
   useEffect(() => {
-    return () => {
-      stopCamera();
+    if (!isCameraActive || !videoRef.current) return;
+    let cancelled = false;
+    let controls: IScannerControls | null = null;
+    const start = async () => {
+      try {
+        const reader = new BrowserMultiFormatReader();
+        controls = await reader.decodeFromVideoDevice(undefined, videoRef.current!, (result) => {
+          if (!result) return;
+          const value = result.getText().trim();
+          const now = Date.now();
+          if (!value || (lastScanRef.current.value === value && now - lastScanRef.current.at < 1800)) return;
+          lastScanRef.current = { value, at: now };
+          handleSearch(value);
+        });
+        if (cancelled) controls.stop();
+        else scannerControlsRef.current = controls;
+      } catch (error) {
+        if (cancelled) return;
+        console.error('카메라를 활성화할 수 없습니다:', error);
+        setUpdateMsg({ type: 'error', text: '카메라 접근 권한이 없거나 지원되지 않는 브라우저입니다.' });
+        setIsCameraActive(false);
+      }
     };
-  }, []);
+    void start();
+    return () => {
+      cancelled = true;
+      controls?.stop();
+      scannerControlsRef.current?.stop();
+      scannerControlsRef.current = null;
+    };
+  }, [isCameraActive, items]);
+
+  useEffect(() => () => scannerControlsRef.current?.stop(), []);
 
   // Search item by barcode or name
   const handleSearch = (query: string) => {
@@ -111,32 +134,42 @@ export default function BarcodeScannerPage() {
 
     const matched = items.find(
       (item) =>
+        item.barcode?.toLowerCase() === query.trim().toLowerCase() ||
         item.id.toLowerCase() === query.trim().toLowerCase() ||
         item.name.toLowerCase().includes(query.trim().toLowerCase())
     );
 
     if (matched) {
       setSelectedItem(matched);
-      setUpdateMsg({ type: 'success', text: `'${matched.name}' (${matched.id}) 바코드 인식 완료!` });
+      setUpdateMsg({ type: 'success', text: `'${matched.name}' (${matched.barcode || matched.id}) 바코드 인식 완료!` });
     } else {
       setUpdateMsg({ type: 'error', text: `바코드 또는 상품명 '${query}'에 일치하는 항목이 없습니다.` });
     }
   };
 
   // Stock update (입고 / 출고)
-  const handleStockAdjust = async (delta: number) => {
+  const handleStockAdjust = async (direction: 'inbound' | 'outbound') => {
     if (!selectedItem) return;
-
-    const newCurrent = Math.max(0, selectedItem.current + delta);
+    const enteredUnit = adjustUnit === 'package' && selectedItem.packageUnit ? selectedItem.packageUnit : selectedItem.unit;
+    const baseDelta = adjustAmount * (adjustUnit === 'package' ? selectedItem.packageSize || 1 : 1) * (direction === 'outbound' ? -1 : 1);
+    if (!Number.isFinite(baseDelta) || baseDelta <= 0 || (direction === 'outbound' && baseDelta > selectedItem.current)) {
+      setUpdateMsg({ type: 'error', text: '수량을 확인하세요. 현재 잔량보다 많이 출고할 수 없습니다.' });
+      return;
+    }
+    const newCurrent = selectedItem.current + baseDelta;
     try {
       const res = await fetch('/api/inventory', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: selectedItem.id,
-          current: newCurrent,
+          quantity: adjustAmount,
+          quantityUnit: enteredUnit,
           safe: selectedItem.safe,
           warehouseId: user?.warehouseId,
+          movementType: direction,
+          note: `바코드 화면 ${direction === 'inbound' ? '입고' : '출고'}`,
+          source: 'barcode',
         }),
       });
 
@@ -146,10 +179,10 @@ export default function BarcodeScannerPage() {
         setItems((prev) =>
           prev.map((item) => (item.id === selectedItem.id ? { ...item, ...updated } : item))
         );
-        const actionText = delta > 0 ? `+${delta.toLocaleString()}톤 입고` : `${delta.toLocaleString()}톤 출고`;
+        const actionText = `${adjustAmount.toLocaleString()} ${enteredUnit} ${direction === 'inbound' ? '입고' : '출고'}`;
         setUpdateMsg({
           type: 'success',
-          text: `[${selectedItem.name}] ${actionText} 처리 완료! (현재 재고: ${newCurrent.toLocaleString()}톤)`
+          text: `[${selectedItem.name}] ${actionText} 처리 완료! (현재 재고: ${newCurrent.toLocaleString()} ${selectedItem.unit})`
         });
       } else {
         setUpdateMsg({ type: 'error', text: '재고 수량 변경 중 오류가 발생했습니다.' });
@@ -159,11 +192,24 @@ export default function BarcodeScannerPage() {
     }
   };
 
-  // Assign zone location dynamically
-  const getWarehouseZone = (idStr: string) => {
-    const num = parseInt(idStr.replace(/\D/g, ''), 10) || 1;
-    const zones = ['A구역 - 냉동 보관 (동관 01-A)', 'B구역 - 냉동 보관 (서관 02-B)', 'C구역 - 저온 서늘 보관 (남관 03-C)'];
-    return zones[num % zones.length];
+  const printLabel = () => {
+    if (!selectedItem) return;
+    const labelWindow = window.open('', '_blank', 'width=460,height=320');
+    if (!labelWindow) {
+      setUpdateMsg({ type: 'error', text: '라벨 창이 차단되었습니다. 팝업 허용 후 다시 시도하세요.' });
+      return;
+    }
+    const barcodeText = selectedItem.barcode || selectedItem.id;
+    const barcodeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    try {
+      JsBarcode(barcodeSvg, barcodeText, { format: 'CODE128', displayValue: false, margin: 0 });
+    } catch {
+      labelWindow.close();
+      setUpdateMsg({ type: 'error', text: '라벨에 사용할 바코드 값을 확인해주세요.' });
+      return;
+    }
+    labelWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(selectedItem.name)} 라벨</title><style>body{font-family:Arial,sans-serif;margin:0;padding:24px;color:#111}.label{width:78mm;min-height:42mm;border:1px solid #111;padding:5mm;box-sizing:border-box}.name{font-size:18px;font-weight:700;margin-bottom:8px}.code{font:12px monospace;margin-top:8px}.meta{font-size:11px;color:#333}.barcode{width:100%;height:48px}@media print{@page{size:88mm 52mm;margin:0}body{padding:4mm}.label{border:0}}</style></head><body><div class="label"><div class="name">${escapeHtml(selectedItem.name)}</div><div class="meta">현재 ${selectedItem.current.toLocaleString()} ${escapeHtml(selectedItem.unit)}</div>${barcodeSvg.outerHTML.replace('<svg ', '<svg class="barcode" ')}<div class="code">${escapeHtml(barcodeText)}</div></div><script>window.onload=()=>window.print();</script></body></html>`);
+    labelWindow.document.close();
   };
 
   return (
@@ -179,7 +225,7 @@ export default function BarcodeScannerPage() {
             바코드 찍어서 재고 확인 및 조정
           </h1>
           <p className="text-textMuted text-sm mt-1">
-            스마트폰 카메라 또는 바코드 리더기로 상품을 스캔하여 재고 및 창고 위치를 확인하고 실시간 입출고를 등록하세요.
+            카메라에서 바코드를 판독하거나 바코드 리더기로 입력해 품목 재고를 확인하고 입출고를 기록합니다.
           </p>
         </div>
 
@@ -355,12 +401,16 @@ export default function BarcodeScannerPage() {
                 <div className="bg-gray-50 dark:bg-gray-800/60 p-3 rounded-2xl border border-gray-100 dark:border-gray-700/50 flex items-center gap-3">
                   <Warehouse className="w-6 h-6 text-primary" />
                   <div>
-                    <span className="text-[10px] text-textMuted uppercase font-bold block">창고 보관 구역</span>
+                    <span className="text-[10px] text-textMuted uppercase font-bold block">품목 ID</span>
                     <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
-                      {getWarehouseZone(selectedItem.id)}
+                      {selectedItem.id}
                     </span>
                   </div>
                 </div>
+              </div>
+
+              <div className="flex justify-end">
+                <button onClick={printLabel} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-bold"><BarcodeIcon className="h-4 w-4" />라벨 인쇄</button>
               </div>
 
               {/* Stock Numbers Display */}
@@ -371,7 +421,7 @@ export default function BarcodeScannerPage() {
                     <span className="text-3xl font-black text-primary">
                       {selectedItem.current.toLocaleString()}
                     </span>
-                    <span className="text-sm font-bold text-gray-500">톤</span>
+                    <span className="text-sm font-bold text-gray-500">{selectedItem.unit}</span>
                   </div>
                   <span className="text-[11px] text-gray-500 mt-1 block">
                     {selectedItem.diffText}
@@ -384,7 +434,7 @@ export default function BarcodeScannerPage() {
                     <span className="text-3xl font-black text-gray-800 dark:text-gray-200">
                       {selectedItem.safe.toLocaleString()}
                     </span>
-                    <span className="text-sm font-bold text-gray-500">톤</span>
+                    <span className="text-sm font-bold text-gray-500">{selectedItem.unit}</span>
                   </div>
                   <span className="text-[11px] text-gray-500 mt-1 block">
                     점검 주기: {selectedItem.cycle}
@@ -409,40 +459,34 @@ export default function BarcodeScannerPage() {
                   실시간 현장 재고 입출고 처리
                 </h3>
 
-                {/* Adjust Amount Presets */}
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-textMuted">조정 수량 (톤):</span>
-                  {[50, 100, 500, 1000].map((amt) => (
-                    <button
-                      key={amt}
-                      onClick={() => setAdjustAmount(amt)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
-                        adjustAmount === amt
-                          ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
-                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200'
-                      }`}
-                    >
-                      {amt}톤
-                    </button>
-                  ))}
+                <div className="grid grid-cols-[minmax(120px,1fr)_minmax(110px,0.7fr)] gap-3">
+                  <label className="text-xs font-semibold text-textMuted">변동 수량
+                    <input type="number" min="0.000001" step="0.000001" value={adjustAmount} onChange={(event) => setAdjustAmount(Number(event.target.value))} className="mt-1 w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2.5 text-sm text-textMain dark:text-white" />
+                  </label>
+                  <label className="text-xs font-semibold text-textMuted">입력 단위
+                    <select value={adjustUnit} onChange={(event) => setAdjustUnit(event.target.value as 'base' | 'package')} className="mt-1 w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2.5 text-sm text-textMain dark:text-white">
+                      <option value="base">{selectedItem.unit}</option>
+                      {selectedItem.packageUnit && <option value="package">{selectedItem.packageUnit} ({selectedItem.packageSize} {selectedItem.unit})</option>}
+                    </select>
+                  </label>
                 </div>
 
                 {/* Inbound / Outbound Action Buttons */}
                 <div className="grid grid-cols-2 gap-4">
                   <button
-                    onClick={() => handleStockAdjust(adjustAmount)}
+                    onClick={() => handleStockAdjust('inbound')}
                     className="py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 active:scale-[0.98] transition-all"
                   >
                     <ArrowDownLeft className="w-5 h-5" />
-                    +{adjustAmount.toLocaleString()}톤 입고 처리
+                    {adjustAmount.toLocaleString()} {adjustUnit === 'package' ? selectedItem.packageUnit : selectedItem.unit} 입고 처리
                   </button>
 
                   <button
-                    onClick={() => handleStockAdjust(-adjustAmount)}
+                    onClick={() => handleStockAdjust('outbound')}
                     className="py-3.5 px-4 bg-red-600 hover:bg-red-700 text-white rounded-2xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-red-600/20 active:scale-[0.98] transition-all"
                   >
                     <ArrowUpRight className="w-5 h-5" />
-                    -{adjustAmount.toLocaleString()}톤 출고 처리
+                    {adjustAmount.toLocaleString()} {adjustUnit === 'package' ? selectedItem.packageUnit : selectedItem.unit} 출고 처리
                   </button>
                 </div>
               </div>

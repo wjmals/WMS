@@ -7,7 +7,10 @@ const RUST_API = process.env.RUST_API_URL || 'http://localhost:8080';
 async function proxy(req: NextRequest, method: string): Promise<NextResponse> {
   const url = new URL(req.url);
   const targetUrl = `${RUST_API}${url.pathname}${url.search}`;
-  const init: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const authorization = req.headers.get('authorization');
+  if (authorization) headers.Authorization = authorization;
+  const init: RequestInit = { method, headers };
 
   if (method !== 'GET' && method !== 'DELETE') {
     try { init.body = await req.text(); } catch {}

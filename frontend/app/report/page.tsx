@@ -3,10 +3,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   FileText, Search, AlertTriangle, Package, CheckCircle, Lightbulb, 
-  Wand2, Plus, Trash2, RefreshCw, X, Printer, Download, Sparkles, TrendingDown, TrendingUp
+  Plus, Trash2, RefreshCw, X, Printer, Download, Sparkles, TrendingDown, TrendingUp
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
+import InventoryDataTools from '../../components/InventoryDataTools';
+import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
 
 type InventoryItem = {
   id: string;
@@ -15,13 +17,16 @@ type InventoryItem = {
   name: string;
   current: number;
   safe: number;
+  unit: string;
+  packageUnit?: string | null;
+  packageSize?: number;
   diffText: string;
   recommendation: string;
   cycle: string;
   date: string;
 };
 
-export default function AIReportPage() {
+export default function InventoryReportPage() {
   const { user } = useAuth();
   const isWarehouseAdmin = user?.role === '관리자' || user?.role === '총괄';
   const canRegisterInventory = isWarehouseAdmin || user?.role === '창고지기';
@@ -30,15 +35,14 @@ export default function AIReportPage() {
   const [activeFilter, setActiveFilter] = useState('전체');
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
-  const [addForm, setAddForm] = useState({ name: '', current: '', safe: '', cycle: '월간' });
+  const [addForm, setAddForm] = useState({ name: '', current: '', safe: '', unit: '톤', packageUnit: '', packageSize: '1', cycle: '월간' });
   const [adding, setAdding] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
 
   // 모달 상태
   const [selectedReportItem, setSelectedReportItem] = useState<InventoryItem | null>(null);
-  const [showAiSummaryModal, setShowAiSummaryModal] = useState(false);
-  const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiSummaryContent, setAiSummaryContent] = useState<string>('');
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
+  const [summaryContent, setSummaryContent] = useState('');
 
   // DB에서 데이터 조회 (배경 동기화 시 화면 깜빡임 방지)
   const fetchData = useCallback(async (isSilent = false) => {
@@ -49,8 +53,9 @@ export default function AIReportPage() {
       if (search) params.set('search', search);
       if (activeFilter !== '전체') params.set('status', activeFilter);
       const res = await fetch(`/api/inventory?${params.toString()}`);
+      if (!res.ok) throw new Error(`재고 조회에 실패했습니다 (${res.status}).`);
       const json = await res.json();
-      setData(Array.isArray(json) ? json : []);
+      setData(Array.isArray(json) ? normalizeApiNumbers(json) : []);
     } catch (e) {
       console.error(e);
     } finally {
@@ -60,7 +65,7 @@ export default function AIReportPage() {
 
   useEffect(() => {
     fetchData(false);
-    const timer = setInterval(() => fetchData(true), 4000);
+    const timer = setInterval(() => fetchData(true), 15000);
     return () => clearInterval(timer);
   }, [fetchData]);
 
@@ -70,7 +75,7 @@ export default function AIReportPage() {
 
   // 새 항목 추가
   const handleAdd = async () => {
-    if (!addForm.name || !addForm.current || !addForm.safe) return;
+    if (!addForm.name.trim() || addForm.current === '' || addForm.safe === '' || Number(addForm.packageSize) <= 0) return;
     setAdding(true);
     try {
       const res = await fetch('/api/inventory', {
@@ -80,6 +85,10 @@ export default function AIReportPage() {
           name: addForm.name,
           current: Number(addForm.current),
           safe: Number(addForm.safe),
+          unit: addForm.unit.trim(),
+          packageUnit: addForm.packageUnit.trim() || undefined,
+          packageSize: Number(addForm.packageSize),
+          note: '초기 재고 등록',
           cycle: addForm.cycle,
           warehouseId: user?.warehouseId,
         }),
@@ -88,7 +97,7 @@ export default function AIReportPage() {
         const errorData = await res.json().catch(() => null);
         throw new Error(errorData?.error || '재고 항목 추가에 실패했습니다.');
       }
-      setAddForm({ name: '', current: '', safe: '', cycle: '월간' });
+      setAddForm({ name: '', current: '', safe: '', unit: '톤', packageUnit: '', packageSize: '1', cycle: '월간' });
       setShowAddForm(false);
       await fetchData();
     } catch (e) {
@@ -113,33 +122,28 @@ export default function AIReportPage() {
     }
   };
 
-  // AI 전체 리포트 생성
-  const handleGenerateSummary = async () => {
-    setShowAiSummaryModal(true);
-    setAiGenerating(true);
-    setAiSummaryContent('');
-    // 실제 데이터 기반 AI 종합 분석 생성
-    setTimeout(() => {
-      const shortageList = data.filter(i => i.status === 'shortage').map(i => i.name).join(', ');
-      const overstockList = data.filter(i => i.status === 'overstock').map(i => i.name).join(', ');
-      const text = `
-### 📊 2026년 WMS 스마트 물류 재고 AI 종합 진단 리포트
-
-1. **긴급 조치 사항 (재고 부족 경보)**
-   - 위험 품목: **${shortageList || '없음'}**
-   - 권고 조치: 안전 하한선 이탈로 향후 3일 이내 결품 위험 발생. 협력 공급사 및 생산처에 긴급 보충 발주를 요청하십시오.
-
-2. **재고 최적화 및 창고 회전율 개선 (재고 과다)**
-   - 과다 품목: **${overstockList || '없음'}**
-   - 권고 조치: 보관 비용 및 랙 점유율 상승 방지를 위해 B2B 채널 프로모션 및 유통 출하 물량을 주간 30% 확대하십시오.
-
-3. **안전 재고 및 총평**
-   - 주요 기준 품목 및 표준 규격재는 안정적인 수급 사이클을 유지하고 있습니다.
-   - 전체 수급 건전성 지수는 '양호(B+)' 수준이며, 주간 주기적인 모니터링을 지속하시기 바랍니다.
-      `;
-      setAiSummaryContent(text.trim());
-      setAiGenerating(false);
-    }, 900);
+  // Summarize the current database values without implying an AI forecast.
+  const openInventorySummary = () => {
+    if (loading) return;
+    setShowSummaryModal(true);
+    const shortage = data.filter((item) => item.status === 'shortage');
+    const overstock = data.filter((item) => item.status === 'overstock');
+    const safe = data.filter((item) => item.status === 'safe');
+    const listItems = (items: InventoryItem[]) => items.length
+      ? items.map((item) => `- ${item.name}: 현재 ${item.current.toLocaleString()}${item.unit} / 안전 ${item.safe.toLocaleString()}${item.unit}`).join('\n')
+      : '- 해당 품목 없음';
+    setSummaryContent([
+      `현재 조회 품목: ${data.length}건`,
+      `부족 ${shortage.length}건 · 적정 ${safe.length}건 · 과다 ${overstock.length}건`,
+      '',
+      '부족 품목',
+      listItems(shortage),
+      '',
+      '과다 품목',
+      listItems(overstock),
+      '',
+      '현재 재고와 안전재고를 비교한 규칙 기반 요약입니다. 미래 예측이나 권장 발주량은 포함하지 않습니다.',
+    ].join('\n'));
   };
 
   const shortageCount = data.filter(i => i.status === 'shortage').length;
@@ -160,10 +164,10 @@ export default function AIReportPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-gray-200 dark:border-gray-800 pb-5">
         <div>
           <div className="text-primary font-bold text-xs tracking-wider uppercase mb-1">
-            AI INVENTORY DIAGNOSTIC REPORT
+            INVENTORY STATUS REPORT
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-textMain dark:text-white">
-            AI 재고 상태 분석 리포트
+            재고 상태 요약
           </h1>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -183,12 +187,12 @@ export default function AIReportPage() {
               항목 추가
             </button>
           )}
-          <button 
-            onClick={handleGenerateSummary}
+          <button
+            onClick={openInventorySummary}
             className="flex items-center gap-2 bg-[#1d1d1f] hover:bg-black text-white px-5 py-2.5 rounded-xl shadow-sm text-sm font-semibold transition-all"
           >
-            <Wand2 size={16} className="text-purple-400" />
-            AI 리포트 즉시 생성
+            <FileText size={16} />
+            현재 재고 요약
           </button>
         </div>
       </div>
@@ -203,8 +207,8 @@ export default function AIReportPage() {
             className="bg-white dark:bg-gray-900 border border-blue-200 dark:border-blue-900 rounded-2xl p-6 shadow-md"
           >
             <h3 className="font-bold text-lg mb-4 text-textMain dark:text-white">신규 재고 항목 추가</h3>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-              <div className="md:col-span-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              <div className="sm:col-span-2">
                 <label className="text-xs font-semibold text-textMuted mb-1 block">품목명 *</label>
                 <input
                   type="text"
@@ -215,9 +219,11 @@ export default function AIReportPage() {
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-textMuted mb-1 block">현재 재고량(톤) *</label>
+                <label className="text-xs font-semibold text-textMuted mb-1 block">현재 재고량 ({addForm.unit || '단위'}) *</label>
                 <input
                   type="number"
+                  step="0.000001"
+                  min="0"
                   placeholder="예: 3500"
                   value={addForm.current}
                   onChange={e => setAddForm(f => ({ ...f, current: e.target.value }))}
@@ -225,14 +231,28 @@ export default function AIReportPage() {
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-textMuted mb-1 block">안전재고 기준(톤) *</label>
+                <label className="text-xs font-semibold text-textMuted mb-1 block">안전재고 기준 ({addForm.unit || '단위'}) *</label>
                 <input
                   type="number"
+                  step="0.000001"
+                  min="0"
                   placeholder="예: 10000"
                   value={addForm.safe}
                   onChange={e => setAddForm(f => ({ ...f, safe: e.target.value }))}
                   className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
                 />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-textMuted mb-1 block">기준 단위 *</label>
+                <input required maxLength={16} value={addForm.unit} onChange={(event) => setAddForm((form) => ({ ...form, unit: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-textMuted mb-1 block">포장 단위 (선택)</label>
+                <input maxLength={16} placeholder="예: 포대" value={addForm.packageUnit} onChange={(event) => setAddForm((form) => ({ ...form, packageUnit: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-textMuted mb-1 block">포장당 기준 수량</label>
+                <input type="number" min="0.000001" step="0.000001" value={addForm.packageSize} onChange={(event) => setAddForm((form) => ({ ...form, packageSize: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
               </div>
             </div>
             <div className="flex gap-2 justify-end">
@@ -259,6 +279,8 @@ export default function AIReportPage() {
         <div className="relative z-10 space-y-2">
           <div className="text-blue-200 text-xs font-semibold flex items-center gap-2">
             <span>AI Real-time Diagnostic</span>
+                                    <span>Server Inventory Rules</span>
+                        <span>Server Inventory Rules</span>
             <span>•</span>
             <span>최종 분석 갱신: 오늘 {currentTime}</span>
           </div>
@@ -350,18 +372,18 @@ export default function AIReportPage() {
                       {item.name}
                     </h3>
                     <div className="text-xs text-textMuted flex flex-wrap items-center gap-x-3 gap-y-1 mt-0.5">
-                      <span>현재: <strong className="text-textMain dark:text-gray-200 font-bold">{item.current.toLocaleString()}톤</strong></span>
-                      <span>안전기준: {item.safe.toLocaleString()}톤</span>
+                      <span>현재: <strong className="text-textMain dark:text-gray-200 font-bold">{item.current.toLocaleString()} {item.unit}</strong></span>
+                      <span>안전기준: {item.safe.toLocaleString()} {item.unit}</span>
                       <span className={`font-semibold ${statusColor}`}>({item.diffText})</span>
                     </div>
                   </div>
                 </div>
 
-                {/* 2. AI 분석 권고사항 (텍스트 줄바꿈 완전 지원) */}
+                {/* 2. Server-calculated recommendation */}
                 <div className="lg:flex-1 border-t lg:border-t-0 lg:border-l border-gray-100 dark:border-gray-800 pt-4 lg:pt-0 lg:pl-6 min-w-0">
                   <div className="text-xs font-bold text-gray-400 mb-1 flex items-center gap-1.5">
                     <Sparkles size={14} className="text-purple-500" />
-                    AI 진단 권고사항
+                        서버 재고 안내
                   </div>
                   <div className="text-sm font-semibold text-textMain dark:text-gray-200 break-keep leading-relaxed">
                     {(item.recommendation || '재고 상태를 확인하고 현 유통 계획을 검토하세요.').split('→').map((part, i, arr) => (
@@ -405,7 +427,9 @@ export default function AIReportPage() {
         )}
       </div>
 
-      {/* 상세 AI 리포트 팝업 모달 */}
+      <InventoryDataTools warehouseId={user?.warehouseId} role={user?.role} />
+
+      {/* 재고 상태 상세 모달 */}
       <AnimatePresence>
         {selectedReportItem && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -424,7 +448,7 @@ export default function AIReportPage() {
                     </span>
                   </div>
                   <h2 className="text-2xl font-extrabold text-textMain dark:text-white">
-                    {selectedReportItem.name} AI 정밀 진단 리포트
+                    {selectedReportItem.name} 재고 현황
                   </h2>
                 </div>
                 <button 
@@ -453,11 +477,11 @@ export default function AIReportPage() {
                 </div>
               </div>
 
-              {/* AI 권고안 세부사항 */}
+              {/* 서버 상태 판정 및 안내 */}
               <div className="space-y-2">
                 <h4 className="text-sm font-bold text-textMain dark:text-white flex items-center gap-2">
                   <Sparkles size={16} className="text-purple-500" />
-                  AI 분석 결과 및 조치 플랜
+                  재고 상태 안내
                 </h4>
                 <div className="p-4 bg-purple-50/50 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/40 rounded-2xl text-sm leading-relaxed text-textMain dark:text-gray-200 break-keep">
                   {selectedReportItem.recommendation}
@@ -467,8 +491,8 @@ export default function AIReportPage() {
               {/* 세부 수급 지표 그리드 */}
               <div className="grid grid-cols-2 gap-3 text-xs">
                 <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-xl">
-                  <span className="text-textMuted block mb-0.5">분석 모델 / 주기</span>
-                  <strong className="text-textMain dark:text-white font-semibold">Gemini & Linear Engine ({selectedReportItem.cycle})</strong>
+                  <span className="text-textMuted block mb-0.5">판정 기준 / 점검 주기</span>
+                  <strong className="text-textMain dark:text-white font-semibold">안전재고 규칙 ({selectedReportItem.cycle})</strong>
                 </div>
                 <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-xl">
                   <span className="text-textMuted block mb-0.5">최종 진단 기준일</span>
@@ -497,9 +521,9 @@ export default function AIReportPage() {
         )}
       </AnimatePresence>
 
-      {/* AI 종합 브리핑 모달 */}
+      {/* 현재 재고 요약 모달 */}
       <AnimatePresence>
-        {showAiSummaryModal && (
+        {showSummaryModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
@@ -510,37 +534,30 @@ export default function AIReportPage() {
               <div className="flex justify-between items-center pb-4 border-b border-gray-100 dark:border-gray-800">
                 <div className="flex items-center gap-2">
                   <div className="w-9 h-9 rounded-xl bg-purple-100 dark:bg-purple-900/40 text-purple-600 flex items-center justify-center">
-                    <Wand2 size={20} />
+                    <FileText size={20} />
                   </div>
                   <div>
                     <h3 className="text-lg font-bold text-textMain dark:text-white">
-                      AI 재고 종합 진단 브리핑
+                      현재 재고 요약
                     </h3>
-                    <p className="text-xs text-textMuted">전체 보관 재고 현황 AI 심층 분석</p>
+                    <p className="text-xs text-textMuted">현재 화면에 불러온 서버 재고 데이터</p>
                   </div>
                 </div>
-                <button 
-                  onClick={() => setShowAiSummaryModal(false)}
+                <button
+                  onClick={() => setShowSummaryModal(false)}
                   className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
                 >
                   <X size={20} />
                 </button>
               </div>
 
-              {aiGenerating ? (
-                <div className="py-16 flex flex-col items-center justify-center gap-3 text-textMuted">
-                  <RefreshCw size={24} className="animate-spin text-purple-600" />
-                  <p className="text-sm font-semibold">전체 재고 데이터를 AI 엔진으로 분석 중입니다...</p>
-                </div>
-              ) : (
-                <div className="bg-gray-50 dark:bg-gray-800/60 p-6 rounded-2xl text-sm leading-relaxed text-textMain dark:text-gray-200 whitespace-pre-line space-y-2">
-                  {aiSummaryContent}
-                </div>
-              )}
+              <div className="bg-gray-50 dark:bg-gray-800/60 p-6 rounded-2xl text-sm leading-relaxed text-textMain dark:text-gray-200 whitespace-pre-line space-y-2">
+                {summaryContent}
+              </div>
 
               <div className="flex justify-end pt-3 border-t border-gray-100 dark:border-gray-800">
                 <button
-                  onClick={() => setShowAiSummaryModal(false)}
+                  onClick={() => setShowSummaryModal(false)}
                   className="px-6 py-2.5 bg-gray-900 hover:bg-black text-white text-xs font-bold rounded-xl transition-all"
                 >
                   닫기

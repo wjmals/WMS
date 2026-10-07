@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
   AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck,
   Warehouse, Settings, X, Edit2, Camera, Sparkles, Barcode, Plus, Trash2, Box
@@ -10,6 +10,7 @@ import {
 
 import { useAuth } from '../context/AuthContext';
 import SuperAdminConsole from '../components/SuperAdminConsole';
+import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
 
 type InventoryItem = {
   id: string;
@@ -18,6 +19,9 @@ type InventoryItem = {
   statusLabel: string;
   current: number;
   safe: number;
+  unit: string;
+  packageUnit?: string | null;
+  packageSize?: number;
   diffText: string;
   cycle?: string;
 };
@@ -31,8 +35,30 @@ type ZoneData = {
   temp: string;
   items: string[];
   capacity?: number;
+  capacityUnit?: string;
   currentStockSum?: number;
 };
+
+type MovementDay = {
+  day: string;
+  inbound: number;
+  outbound: number;
+  adjustments: number;
+  movementCount: number;
+};
+
+function getOutboundTrend(rows: MovementDay[]) {
+  const active = rows.filter((row) => row.movementCount > 0);
+  if (active.length < 2) return '실제 변동 데이터가 2일 이상 쌓이면 출고 추세를 계산합니다.';
+  const midpoint = Math.floor(active.length / 2);
+  const average = (values: MovementDay[]) => values.reduce((sum, row) => sum + row.outbound, 0) / values.length;
+  const firstHalf = average(active.slice(0, midpoint));
+  const secondHalf = average(active.slice(midpoint));
+  if (firstHalf === 0 && secondHalf === 0) return '선택 기간에 기록된 출고가 없습니다.';
+  const change = firstHalf === 0 ? 100 : ((secondHalf - firstHalf) / firstHalf) * 100;
+  if (Math.abs(change) < 5) return '최근 기록 기준 출고량이 대체로 비슷합니다.';
+  return `최근 출고량이 이전 구간보다 ${Math.abs(Math.round(change))}% ${change > 0 ? '증가' : '감소'}했습니다. 과거 기록 요약이며 미래 예측은 아닙니다.`;
+}
 
 export default function InventoryDashboard() {
   const { user } = useAuth();
@@ -44,6 +70,7 @@ export default function InventoryDashboard() {
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [zones, setZones] = useState<ZoneData[]>([]);
+  const [movementDays, setMovementDays] = useState<MovementDay[]>([]);
   const [loading, setLoading] = useState(true);
 
   // 구역 설정 모달 상태
@@ -55,8 +82,12 @@ export default function InventoryDashboard() {
   // 수기 재고 품목 추가 모달 상태
   const [showAddInvModal, setShowAddInvModal] = useState(false);
   const [newInvName, setNewInvName] = useState('');
+  const [newInvBarcode, setNewInvBarcode] = useState('');
   const [newInvCurrent, setNewInvCurrent] = useState<number>(10000);
   const [newInvSafe, setNewInvSafe] = useState<number>(8000);
+  const [newInvUnit, setNewInvUnit] = useState('톤');
+  const [newInvPackageUnit, setNewInvPackageUnit] = useState('');
+  const [newInvPackageSize, setNewInvPackageSize] = useState<number>(1);
   const [newInvCycle, setNewInvCycle] = useState('월간');
   const [savingInv, setSavingInv] = useState(false);
 
@@ -66,6 +97,7 @@ export default function InventoryDashboard() {
   const [newZoneName, setNewZoneName] = useState('');
   const [newZoneTemp, setNewZoneTemp] = useState('-20°C');
   const [newZoneCapacity, setNewZoneCapacity] = useState<number>(100000);
+  const [newZoneCapacityUnit, setNewZoneCapacityUnit] = useState('톤');
   const [newZoneSelectedItems, setNewZoneSelectedItems] = useState<string[]>([]);
   const [creatingZone, setCreatingZone] = useState(false);
 
@@ -74,15 +106,18 @@ export default function InventoryDashboard() {
     if (!user) return;
     const warehouseId = encodeURIComponent(user.warehouseId || 'wh_wjmals');
     try {
-      const [invRes, zoneRes] = await Promise.all([
+      const [invRes, zoneRes, movementRes] = await Promise.all([
         fetch(`/api/inventory?warehouseId=${warehouseId}`),
-        fetch(`/api/zones?warehouseId=${warehouseId}`)
+        fetch(`/api/zones?warehouseId=${warehouseId}`),
+        fetch(`/api/inventory/movements?warehouseId=${warehouseId}&days=30`)
       ]);
       const invData = await invRes.json();
       const zoneData = await zoneRes.json();
+      const movementData = await movementRes.json();
 
-      if (Array.isArray(invData)) setItems(invData);
-      if (Array.isArray(zoneData)) setZones(zoneData);
+      if (Array.isArray(invData)) setItems(normalizeApiNumbers(invData));
+      if (Array.isArray(zoneData)) setZones(normalizeApiNumbers(zoneData));
+      if (Array.isArray(movementData)) setMovementDays(normalizeApiNumbers(movementData));
     } catch (e) {
       console.error(e);
     } finally {
@@ -93,13 +128,12 @@ export default function InventoryDashboard() {
   useEffect(() => {
     if (user) {
       fetchData();
-      const timer = setInterval(fetchData, 3000);
+      const timer = setInterval(fetchData, 15000);
       return () => clearInterval(timer);
     }
   }, [user, fetchData]);
 
   // 수요예측 필터 선택
-  const [selectedChartItem, setSelectedChartItem] = useState<string>('all');
 
   // 창고 관리자가 재고 품목 수기 신규 등록
   const handleAddInventory = async (e: React.FormEvent) => {
@@ -112,8 +146,13 @@ export default function InventoryDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newInvName.trim(),
+          barcode: newInvBarcode.trim() || undefined,
           current: Number(newInvCurrent),
           safe: Number(newInvSafe),
+          unit: newInvUnit.trim(),
+          packageUnit: newInvPackageUnit.trim() || undefined,
+          packageSize: Number(newInvPackageSize),
+          note: '초기 재고 등록',
           cycle: newInvCycle,
           warehouseId: user?.warehouseId,
         }),
@@ -121,8 +160,12 @@ export default function InventoryDashboard() {
       if (res.ok) {
         setShowAddInvModal(false);
         setNewInvName('');
+        setNewInvBarcode('');
         setNewInvCurrent(10000);
         setNewInvSafe(8000);
+        setNewInvUnit('톤');
+        setNewInvPackageUnit('');
+        setNewInvPackageSize(1);
         await fetchData();
       } else {
         alert('재고 품목 추가 실패');
@@ -163,6 +206,7 @@ export default function InventoryDashboard() {
           name: newZoneName.trim(),
           temp: newZoneTemp,
           capacity: Number(newZoneCapacity),
+          capacityUnit: newZoneCapacityUnit.trim(),
           items: newZoneSelectedItems,
           warehouseId: user?.warehouseId,
         }),
@@ -214,7 +258,7 @@ export default function InventoryDashboard() {
           </h1>
 
           <p className="text-base md:text-lg text-textMuted max-w-2xl mx-auto leading-relaxed">
-            Groq LLaMA-4 비전 AI CCTV 관제, 스마트 바코드 스캐너, 실재고 연동 동적 공실률 산출 및 30일 시계열 AI 수급 예측 통합 솔루션입니다.
+            바코드 판독, 재고 입출고 장부, 실재고 기반 구역 점유율과 택배사 조회를 지원합니다. 미래 수요 예측은 제공하지 않습니다.
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-4 pt-2">
@@ -250,10 +294,10 @@ export default function InventoryDashboard() {
                 <Barcode className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                1. 스마트 바코드 스캐너 & 입출고
+                1. 품목 검색 및 입출고 수량 조정
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
-                스마트폰 카메라 또는 바코드 리더기를 이용해 바코드/SKU를 스캔하고, 창고 보관 구역 위치를 조회한 후 즉시 현장에서 수량 조정(+/- 톤)이 가능합니다.
+                ZXing 카메라 판독 또는 입력한 바코드/SKU·품목 ID·이름으로 재고를 찾아 입고와 출고를 기록합니다.
               </p>
             </div>
 
@@ -262,10 +306,10 @@ export default function InventoryDashboard() {
                 <Camera className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                2. Groq LLaMA-4 Vision AI 실시간 관제
+                2. 이미지 레퍼런스 기반 비전 분석
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
-                CCTV 카메라 스트림을 비전 AI 모델이 실시간 분석하고, 수치 감지 시 DB 및 창고 공실률에 즉시 자동 반영합니다.
+                선택한 카메라 프레임을 Groq Vision에 보내 분석하고 결과를 이력으로 저장합니다. API 키가 필요하며 분석 결과가 검증된 실측값을 뜻하지는 않습니다.
               </p>
             </div>
 
@@ -274,10 +318,10 @@ export default function InventoryDashboard() {
                 <Warehouse className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                3. 실재고 용량 연동 창고 공실률 동적 산출
+                3. 창고 구역 및 용량 관리
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
-                창고 구역별 실제 보관 중인 품목 수량을 실시간 계산하여 공실률(0%~100%) 및 상태를 동적으로 갱신합니다.
+                창고 구역의 이름, 보관 온도, 용량, 품목 메타데이터를 관리합니다. 재고로 자동 계산되는 공실률은 아직 제공하지 않습니다.
               </p>
             </div>
 
@@ -303,32 +347,18 @@ export default function InventoryDashboard() {
     return <SuperAdminConsole />;
   }
 
-  // 로그인 상태일 때: 실시간 재고 & 수요 예측 대시보드 출력
-  const totalCurrent = items.reduce((acc, i) => acc + (i.current || 0), 0);
-  const totalSafe = items.reduce((acc, i) => acc + (i.safe || 0), 0);
+  // 로그인 상태일 때: 현재 재고와 창고 현황 대시보드 출력
+  const stockTotalsByUnit = Array.from(items.reduce((totals, item) => {
+    const unit = item.unit || '단위 미지정';
+    const current = totals.get(unit) || { current: 0, safe: 0 };
+    current.current += item.current || 0;
+    current.safe += item.safe || 0;
+    totals.set(unit, current);
+    return totals;
+  }, new Map<string, { current: number; safe: number }>()).entries());
   const shortageItems = items.filter(i => i.status === 'shortage');
   const overstockItems = items.filter(i => i.status === 'overstock');
   const safeItems = items.filter(i => i.status === 'safe');
-
-  // 선택된 품목 대상 데이터
-  const activeItemObj = selectedChartItem !== 'all' ? items.find(i => i.name === selectedChartItem) : null;
-  const targetCurrent = activeItemObj ? activeItemObj.current : totalCurrent;
-  const targetSafe = activeItemObj ? activeItemObj.safe : totalSafe;
-
-  // 일평균 소비량 및 소진 D-Day/발주량 산출
-  const dailyAvgConsumed = targetCurrent > 0 ? Math.floor(targetCurrent / 120) : 500;
-  const estimatedDaysLeft = targetCurrent < targetSafe ? Math.max(1, Math.floor((targetCurrent / (targetSafe || 1)) * 5)) : 99;
-  const recommendedOrder = targetCurrent < targetSafe ? Math.max(0, Math.floor(targetSafe * 1.5 - targetCurrent)) : 0;
-
-  // 실제 재고 DB 기반 30일 시계열 수요 및 출고량 계산
-  const demandForecastData = Array.from({ length: 30 }).map((_, i) => {
-    const day = `D-${30 - i}`;
-    const baseDailyConsumed = dailyAvgConsumed;
-    const factor = 1 + Math.sin(i / 4) * 0.15 + (i / 30) * 0.1;
-    const consumed = Math.floor(baseDailyConsumed * factor);
-    const forecast = Math.floor(baseDailyConsumed * (factor + (i > 20 ? 0.05 : 0.02)));
-    return { day, consumed, forecast };
-  });
 
   // 구역 수정 모달 열기
   const handleOpenZoneEdit = (zone: ZoneData) => {
@@ -388,7 +418,7 @@ export default function InventoryDashboard() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="text-primary text-xs font-bold tracking-wider uppercase block">
-              SMART WMS INVENTORY & DEMAND AI
+              SMART WMS INVENTORY OPERATIONS
             </span>
             <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
               isSuperAdmin
@@ -404,7 +434,7 @@ export default function InventoryDashboard() {
             스마트 재고 관리 대시보드
           </h1>
           <p className="text-sm text-textMuted mt-1">
-            실시간 AI 재고 진단, 창고 구역 모니터링 및 시계열 수요 예측 분석
+            현재 재고 상태와 창고 구역 정보를 확인하고 운영 기록을 관리합니다.
           </p>
         </div>
 
@@ -450,7 +480,9 @@ export default function InventoryDashboard() {
             <Warehouse size={18} className="text-primary" />
           </div>
           <h3 className="text-2xl font-bold text-textMain dark:text-white">
-            {loading ? '—' : `${totalCurrent.toLocaleString()} 톤`}
+            {loading ? '—' : stockTotalsByUnit.length
+              ? stockTotalsByUnit.map(([unit, totals]) => `${totals.current.toLocaleString()} ${unit}`).join(' · ')
+              : '0'}
           </h3>
           <p className="text-xs text-textMuted mt-1">총 {items.length}개 보관 품목 운용 중</p>
         </div>
@@ -537,10 +569,10 @@ export default function InventoryDashboard() {
                       📦 {item.name}
                     </td>
                     <td className="py-3 px-3 font-mono text-primary font-bold">
-                      {item.current.toLocaleString()} 톤
+                      {item.current.toLocaleString()} {item.unit}
                     </td>
                     <td className="py-3 px-3 font-mono text-gray-500">
-                      {item.safe.toLocaleString()} 톤
+                      {item.safe.toLocaleString()} {item.unit}
                     </td>
                     <td className="py-3 px-3">
                       <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
@@ -669,7 +701,7 @@ export default function InventoryDashboard() {
                   <div className="flex justify-between text-xs">
                     <span className="text-textMuted">실보관 / 수용용량</span>
                     <strong className="text-textMain dark:text-white font-mono">
-                      {currentSum.toLocaleString()}톤 / {capacity.toLocaleString()}톤
+                      {currentSum.toLocaleString()} {zone.capacityUnit || '톤'} / {capacity.toLocaleString()} {zone.capacityUnit || '톤'}
                     </strong>
                   </div>
                   <div className="flex justify-between text-xs">
@@ -695,109 +727,32 @@ export default function InventoryDashboard() {
         </div>
       </section>
 
-      {/* AI 수요 예측 및 출고 시계열 차트 섹션 (실제 DB 기반) */}
-      <section className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-6 md:p-8 shadow-sm space-y-6">
-        
-        {/* 상단 컨트롤러 및 제목 */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-gray-100 dark:border-gray-800">
-          <div>
-            <div className="flex items-center gap-2 text-primary text-xs font-bold uppercase mb-1">
-              <TrendingUp size={16} />
-              AI TIME-SERIES FORECASTING ENGINE
-            </div>
-            <h2 className="text-2xl font-bold text-textMain dark:text-white">
-              수요 예측 및 소비 동향 (최근 30일 시계열 분석)
-            </h2>
-            <p className="text-xs text-textMuted mt-1">
-              과거 출고 패턴을 머신러닝 시계열 모델로 분석하여 향후 재고 소진 시점 및 추천 발주량을 예측합니다.
-            </p>
-          </div>
-
-          {/* 품목 선택 드롭다운 & 범례 */}
-          <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-            <select
-              value={selectedChartItem}
-              onChange={(e) => setSelectedChartItem(e.target.value)}
-              className="px-3.5 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-bold text-textMain dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/20"
-            >
-              <option value="all">📦 전체 품목 통합 분석</option>
-              {items.map(item => (
-                <option key={item.id} value={item.name}>
-                  {item.name} ({item.statusLabel})
-                </option>
-              ))}
-            </select>
-
-            <div className="flex items-center gap-3 text-xs font-semibold bg-gray-50 dark:bg-gray-800/60 px-3 py-2 rounded-xl">
-              <span className="flex items-center gap-1.5 text-blue-600">
-                <span className="w-3 h-0.5 bg-blue-600 rounded"></span> 실제 출고량
-              </span>
-              <span className="flex items-center gap-1.5 text-purple-600">
-                <span className="w-3 h-0.5 bg-purple-600 border-t border-dashed rounded"></span> AI 예측치
-              </span>
-            </div>
-          </div>
+      <section className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-6 md:p-8 shadow-sm">
+        <div className="flex items-center gap-2 text-primary text-xs font-bold uppercase mb-2">
+          <TrendingUp size={16} />
+          실제 재고 입출고 기록
         </div>
-
-        {/* 선택된 품목별 핵심 시계열 지표 요약 카드 */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/40 p-4 rounded-xl">
-            <span className="text-xs font-semibold text-textMuted block">일평균 소비/출고량</span>
-            <strong className="text-xl font-bold text-primary mt-1 block">
-              {dailyAvgConsumed.toLocaleString()} 톤 / 일
-            </strong>
-            <span className="text-[11px] text-textMuted">최근 30일 누적 소진 속도</span>
+        <h2 className="text-xl font-bold text-textMain dark:text-white">최근 30일 입고·출고 추이</h2>
+        <p className="text-sm text-textMuted mt-2">{getOutboundTrend(movementDays)} 미래 수요나 권장 발주량은 표시하지 않습니다.</p>
+        {movementDays.some((row) => row.movementCount > 0) ? (
+          <div className="h-[280px] w-full mt-6">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={movementDays}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="day" tick={{ fontSize: 10 }} minTickGap={24} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Line type="monotone" dataKey="inbound" name="입고량" stroke="#059669" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="outbound" name="출고량" stroke="#dc2626" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="adjustments" name="기타 조정" stroke="#64748b" strokeWidth={1.5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
-
-          <div className="bg-purple-50/50 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/40 p-4 rounded-xl">
-            <span className="text-xs font-semibold text-textMuted block">AI 결품 위험 예상 시점</span>
-            <strong className={`text-xl font-bold mt-1 block ${estimatedDaysLeft < 5 ? 'text-red-600' : 'text-purple-600'}`}>
-              {estimatedDaysLeft < 99 ? `D-${estimatedDaysLeft} 일 후 위험` : '안정 (D+30 이상)'}
-            </strong>
-            <span className="text-[11px] text-textMuted">안전 하한선(Safe Limit) 기준</span>
+        ) : (
+          <div className="mt-5 border-t border-gray-100 dark:border-gray-800 pt-5 text-sm text-textMuted">
+            아직 입출고 변동 기록이 없습니다. 바코드 화면에서 첫 입고 또는 출고를 기록하면 실제 이력이 여기에 표시됩니다.
           </div>
-
-          <div className="bg-amber-50/50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/40 p-4 rounded-xl">
-            <span className="text-xs font-semibold text-textMuted block">AI 권장 긴급 발주량</span>
-            <strong className="text-xl font-bold text-amber-600 mt-1 block">
-              {recommendedOrder.toLocaleString()} 톤
-            </strong>
-            <span className="text-[11px] text-textMuted">적정 수급 유지를 위한 권장 수량</span>
-          </div>
-        </div>
-
-        {/* 30일 시계열 차트 */}
-        <div className="h-[340px] w-full pt-2">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={demandForecastData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F0F0F0" />
-              <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: '#8E8E93', fontSize: 11 }} dy={8} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#8E8E93', fontSize: 11 }} dx={-8} />
-              <Tooltip 
-                contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 8px 16px rgba(0,0,0,0.08)' }}
-                cursor={{ stroke: '#0071E3', strokeWidth: 1, strokeDasharray: '3 3' }}
-              />
-              <Line 
-                type="monotone" 
-                dataKey="consumed" 
-                name="실제 소비량(톤)"
-                stroke="#0071E3" 
-                strokeWidth={2.5}
-                dot={false}
-                activeDot={{ r: 5, fill: '#0071E3', stroke: '#fff', strokeWidth: 2 }}
-              />
-              <Line 
-                type="monotone" 
-                dataKey="forecast" 
-                name="AI 예측치(톤)"
-                stroke="#8b5cf6" 
-                strokeWidth={2}
-                strokeDasharray="4 4"
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        )}
       </section>
 
       {/* 1. 수기 재고 품목 추가 모달 (창고 관리자 전용) */}
@@ -833,29 +788,54 @@ export default function InventoryDashboard() {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-textMuted uppercase block mb-1">바코드 / SKU</label>
+                  <input
+                    type="text"
+                    value={newInvBarcode}
+                    onChange={e => setNewInvBarcode(e.target.value)}
+                    placeholder="라벨에 인쇄된 코드 (선택)"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
                   <div>
-                    <label className="font-bold text-textMuted uppercase block mb-1">현재 수량 (톤)</label>
+                    <label className="font-bold text-textMuted uppercase block mb-1">현재 수량 ({newInvUnit})</label>
                     <input
                       type="number"
                       required
                       min="0"
+                      step="0.000001"
                       value={newInvCurrent}
                       onChange={e => setNewInvCurrent(Number(e.target.value))}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
                     />
                   </div>
                   <div>
-                    <label className="font-bold text-textMuted uppercase block mb-1">안전 재고 수량 (톤)</label>
+                    <label className="font-bold text-textMuted uppercase block mb-1">안전 재고 수량 ({newInvUnit})</label>
                     <input
                       type="number"
                       required
                       min="0"
+                      step="0.000001"
                       value={newInvSafe}
                       onChange={e => setNewInvSafe(Number(e.target.value))}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
                     />
                   </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <label className="text-xs font-bold text-textMuted">기준 단위
+                    <input required maxLength={16} value={newInvUnit} onChange={(event) => setNewInvUnit(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
+                  </label>
+                  <label className="text-xs font-bold text-textMuted">포장 단위
+                    <input maxLength={16} placeholder="상자" value={newInvPackageUnit} onChange={(event) => setNewInvPackageUnit(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
+                  </label>
+                  <label className="text-xs font-bold text-textMuted">포장당 {newInvUnit}
+                    <input type="number" required min="0.000001" step="0.000001" value={newInvPackageSize} onChange={(event) => setNewInvPackageSize(Number(event.target.value))} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
+                  </label>
                 </div>
 
                 <div>
@@ -952,15 +932,20 @@ export default function InventoryDashboard() {
                     />
                   </div>
                   <div>
-                    <label className="font-bold text-textMuted uppercase block mb-1">최대 수용 용량 (톤)</label>
+                    <label className="font-bold text-textMuted uppercase block mb-1">최대 수용 용량 ({newZoneCapacityUnit})</label>
                     <input
                       type="number"
                       required
                       min="1000"
+                      step="0.000001"
                       value={newZoneCapacity}
                       onChange={e => setNewZoneCapacity(Number(e.target.value))}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono"
                     />
+                  </div>
+                  <div>
+                    <label className="font-bold text-textMuted uppercase block mb-1">용량 단위</label>
+                    <input required maxLength={16} value={newZoneCapacityUnit} onChange={(event) => setNewZoneCapacityUnit(event.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold" />
                   </div>
                 </div>
 
@@ -1050,7 +1035,7 @@ export default function InventoryDashboard() {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="font-bold text-textMuted uppercase block mb-1">보관 온도</label>
                     <input
@@ -1061,14 +1046,19 @@ export default function InventoryDashboard() {
                     />
                   </div>
                   <div>
-                    <label className="font-bold text-textMuted uppercase block mb-1">최대 수용 용량 (톤)</label>
+                    <label className="font-bold text-textMuted uppercase block mb-1">최대 수용 용량 ({editingZone.capacityUnit || '톤'})</label>
                     <input
                       type="number"
                       min="1000"
+                      step="0.000001"
                       value={editingZone.capacity || 100000}
                       onChange={e => setEditingZone({ ...editingZone, capacity: Number(e.target.value) })}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
                     />
+                  </div>
+                  <div>
+                    <label className="font-bold text-textMuted uppercase block mb-1">용량 단위</label>
+                    <input required maxLength={16} value={editingZone.capacityUnit || '톤'} onChange={(event) => setEditingZone({ ...editingZone, capacityUnit: event.target.value })} className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold" />
                   </div>
                 </div>
 

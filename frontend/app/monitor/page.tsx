@@ -4,10 +4,21 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { 
   Camera, Play, Square, Settings, AlertTriangle, CheckCircle, Package, 
   ArrowLeft, Zap, Clock, Wifi, WifiOff, RefreshCw, Eye, ShieldCheck, Sparkles,
-  Plus, Trash2, Upload, X, BookOpen
+  Plus, Trash2, Upload, X, BookOpen, Download, FileSpreadsheet
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
+import ExcelJS from 'exceljs';
+import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
+
+type ReferenceItem = {
+  id: string;
+  warehouseId: string;
+  name: string;
+  description: string;
+  thumbnail: string;
+  createdAt: string;
+};
 
 type AnalysisLog = {
   id: number;
@@ -22,6 +33,8 @@ type AnalysisLog = {
 };
 
 type AnalysisResult = {
+  estimateId?: string;
+  reviewStatus?: string;
   itemName: string;
   estimatedQuantity: number;
   unit: string;
@@ -31,6 +44,21 @@ type AnalysisResult = {
   recommendation: string;
   reason: string;
 };
+
+type PendingEstimate = {
+  id: string;
+  inventoryItemId: string | null;
+  itemName: string;
+  estimatedQuantity: number;
+  unit: string;
+  confidence: number;
+  recommendation: string;
+  reason: string;
+  submittedEmail: string;
+  createdAt: string;
+};
+
+type InventoryChoice = { id: string; name: string; unit: string; packageUnit: string | null };
 
 const statusConfig = {
   shortage: {
@@ -72,6 +100,7 @@ export default function MonitorPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const analysisInFlightRef = useRef(false);
 
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -82,6 +111,9 @@ export default function MonitorPage() {
   const [showSettings, setShowSettings] = useState(true);
   const [latestResult, setLatestResult] = useState<AnalysisResult | null>(null);
   const [logs, setLogs] = useState<AnalysisLog[]>([]);
+  const [pendingEstimates, setPendingEstimates] = useState<PendingEstimate[]>([]);
+  const [inventoryChoices, setInventoryChoices] = useState<InventoryChoice[]>([]);
+  const [reviewSelections, setReviewSelections] = useState<Record<string, string>>({});
   const [analyzing, setAnalyzing] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -89,19 +121,36 @@ export default function MonitorPage() {
   const [shortageCount, setShortageCount] = useState(0);
 
   // AI 분석용 레퍼런스 이미지 상태
-  const [references, setReferences] = useState<any[]>([]);
+  const [references, setReferences] = useState<ReferenceItem[]>([]);
   const [showLearnModal, setShowLearnModal] = useState(false);
   const [learnName, setLearnName] = useState('');
   const [learnDesc, setLearnDesc] = useState('');
   const [learnImage, setLearnImage] = useState<string | null>(null);
   const [savingReference, setSavingReference] = useState(false);
+  const [importingWorkbook, setImportingWorkbook] = useState(false);
+  const [importWorkbook, setImportWorkbook] = useState<File | null>(null);
+  const [importImages, setImportImages] = useState<File[]>([]);
 
   // 이력 불러오기
   const fetchLogs = useCallback(async () => {
     try {
       const res = await fetch(`/api/monitor?warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`);
       const data = await res.json();
-      setLogs(Array.isArray(data) ? data : []);
+      setLogs(Array.isArray(data) ? normalizeApiNumbers(data) : []);
+    } catch {}
+  }, [user]);
+
+  const fetchPendingEstimates = useCallback(async () => {
+    try {
+      const warehouseId = encodeURIComponent(user?.warehouseId || 'wh_wjmals');
+      const [estimateResponse, inventoryResponse] = await Promise.all([
+        fetch(`/api/vision/estimates?warehouseId=${warehouseId}`),
+        fetch(`/api/inventory?warehouseId=${warehouseId}`),
+      ]);
+      const estimates = await estimateResponse.json();
+      const inventory = await inventoryResponse.json();
+      if (Array.isArray(estimates)) setPendingEstimates(normalizeApiNumbers(estimates));
+      if (Array.isArray(inventory)) setInventoryChoices(normalizeApiNumbers(inventory));
     } catch {}
   }, [user]);
 
@@ -118,21 +167,159 @@ export default function MonitorPage() {
   useEffect(() => {
     fetchLogs();
     fetchReferences();
-  }, [fetchLogs, fetchReferences]);
+    fetchPendingEstimates();
+  }, [fetchLogs, fetchReferences, fetchPendingEstimates]);
+
+  const reviewEstimate = async (estimate: PendingEstimate, approve: boolean) => {
+    const inventoryItemId = reviewSelections[estimate.id] || estimate.inventoryItemId || undefined;
+    if (approve && !inventoryItemId) {
+      alert('승인할 재고 품목을 먼저 선택해주세요.');
+      return;
+    }
+    const note = window.prompt(approve ? '승인 사유를 입력하세요.' : '반려 사유를 입력하세요.', approve ? '실물 확인 후 승인' : '실사 필요');
+    if (!note?.trim()) return;
+    const response = await fetch('/api/vision/estimates/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: estimate.id, approve, inventoryItemId, note }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      alert(result.error || '검토 결과를 저장하지 못했습니다.');
+      return;
+    }
+    await Promise.all([fetchPendingEstimates(), fetchLogs()]);
+  };
 
   // 이미지 파일 선택 처리
   const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
-      setLearnImage(event.target?.result as string);
+    reader.onload = async (event) => {
+      try {
+        setLearnImage(await compressImage(event.target?.result as string));
+      } catch (error) {
+        alert(error instanceof Error ? error.message : '이미지 처리에 실패했습니다.');
+      }
     };
     reader.readAsDataURL(file);
   };
 
+  const compressImage = async (dataUrl: string): Promise<string> => {
+    const image = new Image();
+    image.src = dataUrl;
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('이미지 파일을 읽을 수 없습니다.'));
+    });
+    const scale = Math.min(1, 640 / Math.max(image.width, image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('이미지를 변환할 수 없습니다.');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const compressed = canvas.toDataURL('image/jpeg', 0.65);
+    if (compressed.length > 50000) throw new Error('압축 후 이미지가 너무 큽니다. 해상도가 낮은 이미지를 선택해주세요.');
+    return compressed;
+  };
+
+  const saveWorkbook = async (workbook: ExcelJS.Workbook, filename: string) => {
+    const data = await workbook.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([data as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadWorkbookTemplate = async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('References');
+    sheet.addRow(['name', 'description', 'imageFile']);
+    sheet.addRow(['냉동 고등어', '은빛 비늘, 10kg 상자', 'mackerel.jpg']);
+    await saveWorkbook(workbook, 'wms-reference-template.xlsx');
+  };
+
+  const exportReferences = async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('References');
+    sheet.addRow(['name', 'description', 'createdAt', 'imageDataPart1', 'imageDataPart2']);
+    references.forEach((reference) => sheet.addRow([
+      reference.name,
+      reference.description,
+      reference.createdAt,
+      reference.thumbnail.slice(0, 30000),
+      reference.thumbnail.slice(30000),
+    ]));
+    await saveWorkbook(workbook, 'wms-reference-data.xlsx');
+  };
+
+  const handleWorkbookImport = async () => {
+    if (!importWorkbook) return;
+    setImportingWorkbook(true);
+    try {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await importWorkbook.arrayBuffer());
+      const sheet = workbook.worksheets[0];
+      if (!sheet) throw new Error('첫 번째 시트를 찾을 수 없습니다.');
+      const headerValues = sheet.getRow(1).values;
+      if (!Array.isArray(headerValues)) throw new Error('엑셀 헤더를 읽을 수 없습니다.');
+      const headers = headerValues.slice(1).map((header) => String(header || '').trim());
+      const rows: Record<string, unknown>[] = [];
+      sheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        const record: Record<string, unknown> = {};
+        headers.forEach((header, index) => { if (header) record[header] = row.getCell(index + 1).text; });
+        rows.push(record);
+      });
+      if (rows.length === 0 || rows.length > 500) throw new Error('엑셀에 1~500개의 데이터 행이 필요합니다.');
+      const imagesByName = new Map(importImages.map((file) => [file.name.toLowerCase(), file]));
+      const items = await Promise.all(rows.map(async (row, index) => {
+        const name = String(row.name || '').trim();
+        const description = String(row.description || '').trim();
+        const embeddedData = `${String(row.imageDataPart1 || '')}${String(row.imageDataPart2 || '')}`;
+        let image = embeddedData;
+        if (!image) {
+          const imageName = String(row.imageFile || '').trim().toLowerCase();
+          const file = imagesByName.get(imageName);
+          if (!file) throw new Error(`${index + 2}행 이미지 파일을 찾을 수 없습니다: ${imageName || '(imageFile 누락)'}`);
+          image = await compressImage(await fileToDataUrl(file));
+        }
+        if (!name || !image) throw new Error(`${index + 2}행 name 또는 이미지 데이터가 비어 있습니다.`);
+        if (image.length > 50000) throw new Error(`${index + 2}행 이미지 데이터가 50,000자를 초과합니다.`);
+        return { name, description, image };
+      }));
+      if (JSON.stringify({ items }).length > 20 * 1024 * 1024) throw new Error('한 번에 가져올 수 있는 전체 이미지 용량은 20MB입니다. 파일을 나눠 등록해주세요.');
+      const response = await fetch('/api/vision/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ warehouseId: user?.warehouseId, items }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '엑셀 데이터를 등록하지 못했습니다.');
+      await fetchReferences();
+      setImportWorkbook(null);
+      setImportImages([]);
+      alert(`${result.imported}개 레퍼런스를 등록했습니다.`);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '엑셀 파일을 가져오지 못했습니다.');
+    } finally {
+      setImportingWorkbook(false);
+    }
+  };
+
+  const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error(`${file.name} 파일을 읽지 못했습니다.`));
+    reader.readAsDataURL(file);
+  });
+
   // 현재 카메라 화면 캡처하여 레퍼런스 이미지로 사용
-  const handleCaptureForLearn = () => {
+  const handleCaptureForLearn = async () => {
     if (!videoRef.current || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -141,8 +328,11 @@ export default function MonitorPage() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0);
-    const data = canvas.toDataURL('image/jpeg', 0.8);
-    setLearnImage(data);
+    try {
+      setLearnImage(await compressImage(canvas.toDataURL('image/jpeg', 0.8)));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '이미지 처리에 실패했습니다.');
+    }
   };
 
   // 품목 레퍼런스 이미지 저장
@@ -252,21 +442,21 @@ export default function MonitorPage() {
 
   // 프레임 캡처 + AI 분석
   const captureAndAnalyze = useCallback(async () => {
-    if (analyzing) return;
-    let imageData: string | null = null;
+    if (analysisInFlightRef.current) return;
 
     if (!videoRef.current || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const video = videoRef.current;
+    if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return;
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0);
-    imageData = canvas.toDataURL('image/jpeg', 0.75);
-
+    const imageData = canvas.toDataURL('image/jpeg', 0.75);
     if (!imageData) return;
 
+    analysisInFlightRef.current = true;
     setAnalyzing(true);
     try {
       const res = await fetch('/api/monitor', {
@@ -280,7 +470,7 @@ export default function MonitorPage() {
         }),
       });
       if (!res.ok) throw new Error('분석 실패');
-      const result = await res.json();
+      const result = normalizeApiNumbers(await res.json());
       setLatestResult(result);
       setTotalAnalyzed((p) => p + 1);
       if (result.status === 'shortage') setShortageCount((p) => p + 1);
@@ -288,9 +478,10 @@ export default function MonitorPage() {
     } catch (err) {
       console.error('분석 오류:', err);
     } finally {
+      analysisInFlightRef.current = false;
       setAnalyzing(false);
     }
-  }, [analyzing, cameraMode, itemName, ipUrl, fetchLogs]);
+  }, [cameraMode, itemName, ipUrl, fetchLogs, user?.warehouseId]);
 
   // 카운트다운
   useEffect(() => {
@@ -313,7 +504,7 @@ export default function MonitorPage() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [isMonitoring, intervalSec]);
+  }, [isMonitoring, intervalSec, captureAndAnalyze]);
 
   // 모니터링 시작
   const startMonitoring = useCallback(async () => {
@@ -466,7 +657,7 @@ export default function MonitorPage() {
                     <div className={`w-3 h-3 rounded-full ${latestStatus?.dot} animate-ping`} />
                     <div>
                       <span className={`text-xs font-extrabold ${latestStatus?.text}`}>
-                        {latestResult.statusLabel}
+                        {latestResult.reviewStatus === 'PENDING' ? '관리자 확인 대기' : latestResult.statusLabel}
                       </span>
                       <h4 className="text-sm font-bold text-textMain dark:text-white">
                         {latestResult.itemName} ({latestResult.estimatedQuantity}{latestResult.unit})
@@ -620,14 +811,12 @@ export default function MonitorPage() {
             <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-gray-800">
               <h3 className="font-bold text-sm text-textMain dark:text-white flex items-center gap-2">
                 <BookOpen size={16} className="text-purple-600" />
-                AI 분석용 품목 이미지 ({references.length}건)
+                AI 분석 레퍼런스 전체 ({references.length}건)
               </h3>
-              <button
-                onClick={() => setShowLearnModal(true)}
-                className="text-xs text-purple-600 font-bold hover:underline flex items-center gap-1"
-              >
-                <Plus size={14} /> 레퍼런스 추가
-              </button>
+              <div className="flex gap-2">
+                <button onClick={exportReferences} disabled={!references.length} title="엑셀로 내보내기" className="p-2 text-gray-600 disabled:opacity-40 hover:bg-gray-100 rounded-lg"><Download size={16} /></button>
+                <button onClick={() => setShowLearnModal(true)} title="레퍼런스 추가 또는 엑셀 가져오기" className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg"><Plus size={16} /></button>
+              </div>
             </div>
 
             {references.length === 0 ? (
@@ -643,7 +832,10 @@ export default function MonitorPage() {
                       <img src={ref.thumbnail} alt={ref.name} className="w-full h-20 object-cover rounded-lg" />
                     )}
                     <div className="flex justify-between items-center">
-                      <span className="text-xs font-bold truncate text-textMain dark:text-white">{ref.name}</span>
+                      <div className="min-w-0">
+                        <span className="block text-xs font-bold truncate text-textMain dark:text-white">{ref.name}</span>
+                        <span className="block text-[10px] text-textMuted truncate">{ref.description || new Date(ref.createdAt).toLocaleDateString()}</span>
+                      </div>
                       <button
                         onClick={() => handleDeleteReference(ref.id, ref.name)}
                         className="text-gray-400 hover:text-red-500 p-1"
@@ -658,7 +850,51 @@ export default function MonitorPage() {
             )}
           </div>
 
-          {/* 실시간 분석 이력 카드 (MySQL monitor_logs) */}
+          <section className="bg-white dark:bg-gray-900 border border-amber-200 dark:border-amber-900/50 rounded-3xl p-5 shadow-sm space-y-3">
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-3">
+              <div>
+                <h3 className="font-bold text-sm text-textMain dark:text-white">비전 추정 승인 대기</h3>
+                <p className="text-[11px] text-textMuted mt-1">승인 전에는 재고 잔량을 변경하지 않습니다.</p>
+              </div>
+              <button onClick={fetchPendingEstimates} title="대기 목록 새로고침" className="p-1.5 text-textMuted hover:bg-gray-100 rounded-lg"><RefreshCw size={14} /></button>
+            </div>
+            {pendingEstimates.length === 0 ? (
+              <p className="py-5 text-center text-xs text-textMuted">검토할 추정치가 없습니다.</p>
+            ) : pendingEstimates.map((estimate) => {
+              const canReview = user?.role === '관리자' || user?.role === '서버 관리자';
+              const suggestedId = estimate.inventoryItemId || reviewSelections[estimate.id] || '';
+              return (
+                <article key={estimate.id} className="border-b last:border-b-0 border-gray-100 dark:border-gray-800 pb-3 last:pb-0 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-textMain dark:text-white">{estimate.itemName}</p>
+                      <p className="text-xs text-amber-700 dark:text-amber-300">추정 {estimate.estimatedQuantity.toLocaleString()} {estimate.unit} · 신뢰도 {estimate.confidence}%</p>
+                    </div>
+                    <time className="text-[10px] text-textMuted whitespace-nowrap">{new Date(estimate.createdAt).toLocaleString('ko-KR')}</time>
+                  </div>
+                  <p className="text-[11px] text-textMuted">{estimate.reason}</p>
+                  {canReview && (
+                    <>
+                      <select
+                        value={suggestedId}
+                        onChange={(event) => setReviewSelections((current) => ({ ...current, [estimate.id]: event.target.value }))}
+                        className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-xs"
+                      >
+                        <option value="">연결할 재고 품목 선택</option>
+                        {inventoryChoices.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.unit}{item.packageUnit ? ` / ${item.packageUnit}` : ''})</option>)}
+                      </select>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button onClick={() => reviewEstimate(estimate, true)} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800">실사 후 승인</button>
+                        <button onClick={() => reviewEstimate(estimate, false)} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-50">반려</button>
+                      </div>
+                    </>
+                  )}
+                </article>
+              );
+            })}
+          </section>
+
+          {/* 실시간 분석 이력 카드 (PostgreSQL monitor_logs) */}
           <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-5 shadow-sm flex flex-col max-h-[480px]">
             <div className="flex justify-between items-center pb-3 border-b border-gray-100 dark:border-gray-800">
               <h3 className="font-bold text-sm text-textMain dark:text-white flex items-center gap-2">
@@ -736,6 +972,29 @@ export default function MonitorPage() {
             </div>
 
             <div className="space-y-4 text-xs">
+              <section className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h4 className="font-bold text-gray-900">엑셀에서 한 번에 등록</h4>
+                    <p className="mt-1 text-[11px] text-gray-600">엑셀의 이미지 파일명과 같은 사진 파일을 함께 선택하세요. 내보낸 파일은 사진 없이 다시 가져올 수 있습니다.</p>
+                  </div>
+                  <button onClick={downloadWorkbookTemplate} title="엑셀 양식 다운로드" className="shrink-0 p-2 text-emerald-800 hover:bg-emerald-100 rounded-lg"><Download size={16} /></button>
+                </div>
+                <label className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 cursor-pointer">
+                  <FileSpreadsheet size={16} className="text-emerald-700" />
+                  <span className="truncate">{importWorkbook?.name || '엑셀 파일 선택 (.xlsx, .xls)'}</span>
+                  <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(event) => setImportWorkbook(event.target.files?.[0] || null)} />
+                </label>
+                <label className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 cursor-pointer">
+                  <Upload size={16} className="text-emerald-700" />
+                  <span className="truncate">{importImages.length ? `${importImages.length}개 이미지 선택됨` : '엑셀에서 지정한 이미지들 선택'}</span>
+                  <input type="file" accept="image/*" multiple className="hidden" onChange={(event) => setImportImages(Array.from(event.target.files || []))} />
+                </label>
+                <button onClick={handleWorkbookImport} disabled={!importWorkbook || importingWorkbook} className="w-full py-2.5 rounded-lg bg-emerald-700 text-white font-bold disabled:opacity-50">
+                  {importingWorkbook ? '검증 및 저장 중...' : '엑셀 데이터 일괄 등록'}
+                </button>
+              </section>
+
               <div>
                 <label className="font-bold text-textMain dark:text-gray-200 block mb-1">
                   품목 라벨명 (예: 갈치, 고등어, 우럭) *

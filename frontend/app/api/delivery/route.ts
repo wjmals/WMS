@@ -33,7 +33,10 @@ async function detectCarrierAuto(invoiceNo: string): Promise<{ code: string; nam
 async function proxy(req: NextRequest, method: string): Promise<NextResponse> {
   const url = new URL(req.url);
   const targetUrl = `${RUST_API}${url.pathname}${url.search}`;
-  const init: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const authorization = req.headers.get('authorization');
+  if (authorization) headers.Authorization = authorization;
+  const init: RequestInit = { method, headers };
   if (method !== 'GET' && method !== 'DELETE') {
     try { init.body = await req.text(); } catch {}
   }
@@ -70,5 +73,10 @@ export async function DELETE(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   try { return await proxy(req, 'PUT'); }
+  catch { return NextResponse.json({ error: '백엔드 서버 연결 실패' }, { status: 503 }); }
+}
+
+export async function PATCH(req: NextRequest) {
+  try { return await proxy(req, 'PATCH'); }
   catch { return NextResponse.json({ error: '백엔드 서버 연결 실패' }, { status: 503 }); }
 }

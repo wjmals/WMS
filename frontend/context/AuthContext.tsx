@@ -82,13 +82,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('wms_auth_user');
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser));
-      } catch (e) {}
-    }
-    setIsLoading(false);
     refreshUser();
   }, [refreshUser]);
 
@@ -176,6 +169,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const logout = () => {
     setUser(null);
     localStorage.removeItem('wms_auth_user');
+    fetch('/api/session', { method: 'DELETE' }).catch(() => undefined);
   };
 
   return (
