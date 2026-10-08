@@ -301,12 +301,23 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           source: 'manual',
         }),
       });
-      const result = await response.json();
+      const responseText = await response.text();
+      let result: InventoryChoice & { error?: string };
+      try {
+        result = JSON.parse(responseText);
+      } catch {
+        throw new Error(responseText.trim() || `안전재고 저장 응답을 읽지 못했습니다 (${response.status}).`);
+      }
       if (!response.ok) throw new Error(result.error || '안전재고를 저장하지 못했습니다.');
       setEditingSafeItem(null);
       setSafeDraft('');
+      setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, ...normalizeApiNumbers(result), safe } : entry));
       setNotice(`'${item.name}' 안전재고를 ${safe.toLocaleString()} ${item.unit}로 저장했습니다.`);
-      await refresh();
+      try {
+        await refresh();
+      } catch {
+        setNotice(`'${item.name}' 안전재고는 저장됐지만 목록 새로고침에 실패했습니다. 새로고침 버튼으로 확인하세요.`);
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '안전재고를 저장하지 못했습니다.');
     } finally {
