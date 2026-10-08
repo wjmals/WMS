@@ -59,9 +59,9 @@ export default function InventoryReportPage() {
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
-  }, [search, activeFilter, user]);
+  }, [search, activeFilter, user?.warehouseId]);
 
   useEffect(() => {
     fetchData(false);

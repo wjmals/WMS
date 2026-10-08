@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ExcelJS from 'exceljs';
 import { Check, Download, FileSpreadsheet, RefreshCw, Upload, X } from 'lucide-react';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
@@ -12,7 +12,7 @@ type Props = { warehouseId?: string; role?: string };
 type SheetRow = Record<string, ExcelJS.CellValue>;
 
 const rustApi = '/api/inventory';
-const normalizeKey = (value: unknown) => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase().replace(/[\s_\-./()[\]]+/g, '');
+const normalizeKey = (value: unknown) => String(value ?? '').normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().replace(/^'+/, '').toLocaleLowerCase().replace(/[\s_\-./()[\]]+/g, '');
 
 function cellText(value: ExcelJS.CellValue): string {
   if (value === null || value === undefined) return '';
@@ -28,16 +28,22 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   const [items, setItems] = useState<InventoryChoice[]>([]);
   const [inventoryLoaded, setInventoryLoaded] = useState(false);
   const [inventoryLoadError, setInventoryLoadError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
   const [batches, setBatches] = useState<ImportBatch[]>([]);
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const loadedWarehouseIdRef = useRef<string | null>(null);
   const canReview = role === '관리자' || role === '서버 관리자';
 
   const refresh = useCallback(async () => {
     const warehouse = encodeURIComponent(warehouseId);
-    setInventoryLoaded(false);
+    if (loadedWarehouseIdRef.current !== warehouseId) {
+      setInventoryLoaded(false);
+      setItems([]);
+    }
+    setRefreshing(true);
     try {
       const [itemResponse, batchResponse, ledgerResponse] = await Promise.all([
         fetch(`/api/inventory?warehouseId=${warehouse}`),
@@ -50,15 +56,16 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       ]);
       if (!Array.isArray(itemData)) throw new Error('현재 창고 품목 목록 응답이 올바르지 않습니다.');
       setItems(normalizeApiNumbers(itemData));
+      loadedWarehouseIdRef.current = warehouseId;
       setInventoryLoadError('');
       if (Array.isArray(batchData)) setBatches(batchData);
       if (Array.isArray(ledgerData)) setLedger(normalizeApiNumbers(ledgerData));
     } catch (error) {
-      setItems([]);
       setInventoryLoadError(error instanceof Error ? error.message : '현재 창고 품목 목록을 불러오지 못했습니다.');
       throw error;
     } finally {
       setInventoryLoaded(true);
+      setRefreshing(false);
     }
   }, [warehouseId]);
 
@@ -67,6 +74,10 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   }, [refresh]);
 
   const downloadTemplate = async () => {
+    if (!inventoryLoaded || inventoryLoadError || items.length === 0) {
+      setNotice(inventoryLoadError || '현재 창고의 품목을 불러온 뒤 양식을 다운로드할 수 있습니다.');
+      return;
+    }
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Transactions');
     sheet.addRow(['occurredAt', 'inventoryItemId', 'itemName', 'barcode', 'movementType', 'quantity', 'unit', 'note', 'reference']);
@@ -192,12 +203,12 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           <p className="text-xs font-bold uppercase text-primary">Inventory records</p>
           <h2 className="text-xl font-bold text-textMain dark:text-white">과거 거래 가져오기와 감사 장부</h2>
         </div>
-        <button onClick={() => void refresh()} title="새로고침" className="p-2 text-textMuted hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"><RefreshCw size={16} /></button>
+          <button onClick={() => void refresh().catch(() => setNotice('재고 장부를 새로고침하지 못했습니다.'))} title="새로고침" className="p-2 text-textMuted hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"><RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /></button>
       </div>
       <div className="grid gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => void downloadTemplate()} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-semibold"><Download size={14} />엑셀 양식</button>
+            <button onClick={() => void downloadTemplate()} disabled={!inventoryLoaded || !!inventoryLoadError || items.length === 0} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"><Download size={14} />엑셀 양식</button>
             <label className="inline-flex max-w-full items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-semibold cursor-pointer">
               <FileSpreadsheet size={14} /> <span className="truncate">{file?.name || '거래 엑셀 선택'}</span>
               <input type="file" accept=".xlsx" className="hidden" onChange={(event) => setFile(event.target.files?.[0] || null)} />
