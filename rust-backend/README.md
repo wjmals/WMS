@@ -71,7 +71,6 @@ See `docs/API_명세서.md` for full request/response details.
 - `FRONTEND_ORIGINS`: comma-separated allowed browser origins
 - `GROQ_API_KEY`: required for `POST /api/monitor`; estimate results are queued for human review
 - `GROQ_VISION_MODEL`: model ID enabled for image input on the account; defaults to `qwen/qwen3.8-27b`
-- `SWEET_TRACKER_API_KEY`: required for successful external delivery tracking
 
 Do not put database credentials in the frontend or commit `.env` files.
 

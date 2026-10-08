@@ -394,7 +394,7 @@ Rust DTO는 snake_case 필드명을 사용한다. Next 라우트는 요청 본�
 { "id": "uuid" }
 ```
 
-서버가 `SWEET_TRACKER_API_KEY`를 사용해 SweetTracker `POST /api/v1/trackingInfo`에 택배사 코드(`t_code`)와 운송장 번호(`t_invoice`)를 전달한다. 실제 응답의 배송 단계, 위치, 상세 시각을 창고에 격리된 배송 행에 저장한다. API 키 미설정 시 `503`, 제공자 오류 시 `502`, 배송 이력이 없으면 `404`다. 이 API 키는 브라우저에 노출하지 않는다.
+서버가 `GET https://apis.tracker.delivery/carriers/{carrierId}/tracks/{invoiceNo}`를 호출한다. 택배사 코드에서 tracker.delivery carrier ID로 매핑하며 응답의 배송 단계, 위치, 시각을 창고별 배송 행에 저장한다. 이 경로에는 API 키가 필요하지 않다. 외부 제공자 연결/응답 오류는 `502`, 배송 항목이 없으면 `404`다.
 
 ## 8. 모니터링 및 AI 비전
 
@@ -443,7 +443,6 @@ JWT_SECRET=<long-random-secret>
 SUPER_ADMIN_PASSWORD=<unique-admin-password>
 FRONTEND_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 GROQ_API_KEY=<POST /api/monitor에 필요>
-SWEET_TRACKER_API_KEY=<POST /api/delivery/track에 필요> # 실제 추적을 위해 SweetTracker API 키가 필요합니다.
 RUST_API_URL=http://localhost:8080
 ```
 

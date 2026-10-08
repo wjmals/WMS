@@ -109,7 +109,7 @@ erDiagram
 
 ### `warehouse_access_requests`와 `delivery_tracking`
 
-접근 요청은 `user_email`, `user_name`, `admin_email`, `status`, `requested_at`을 기록하며 창고 외래 키가 없다. 배송은 `warehouse_id`, `invoice_no`, 택배사, 품목, 발신·수신자, `status`/`status_code`, 위치, 완료 시각 및 `tracking_details` JSONB를 저장한다. SweetTracker 조회가 성공하면 외부 실제 단계와 상세 이력으로 업데이트한다. 조회는 세션 창고 기준이며 미완료 또는 완료 후 24시간 이내 건을 반환한다. 기존 DB의 누락된 `warehouse_id`는 Rust API 기동 시 기본 창고에 귀속된다.
+접근 요청은 `user_email`, `user_name`, `admin_email`, `status`, `requested_at`을 기록하며 창고 외래 키가 없다. 배송은 `warehouse_id`, `invoice_no`, 택배사, 품목, 발신·수신자, `status`/`status_code`, 위치, 완료 시각 및 `tracking_details` JSONB를 저장한다. tracker.delivery 조회가 성공하면 외부 실제 단계와 상세 이력으로 업데이트한다. 조회는 세션 창고 기준이며 미완료 또는 완료 후 24시간 이내 건을 반환한다. 기존 DB의 누락된 `warehouse_id`는 Rust API 기동 시 기본 창고에 귀속된다.
 
 ## 제약과 동작
 

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 
 export interface User {
   id: string;
@@ -37,20 +37,18 @@ const API_BASE = '/api';
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const sessionVerifiedRef = useRef(false);
 
   const refreshUser = useCallback(async () => {
     const savedUser = localStorage.getItem('wms_auth_user');
     if (!savedUser) {
+      setUser(null);
       setIsLoading(false);
       return;
     }
 
     try {
       const parsed: User = JSON.parse(savedUser);
-      setUser(parsed);
-      setIsLoading(false);
-
-      // 백그라운드에서 최신 정보 동기화
       const res = await fetch(`${API_BASE}/users?action=get_user&email=${encodeURIComponent(parsed.email)}`);
       if (res.ok) {
         const dbUser = await res.json();
@@ -67,15 +65,27 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             requestedAdminEmail: dbUser.requestedAdminEmail,
           };
           setUser(updated);
+          sessionVerifiedRef.current = true;
           localStorage.setItem('wms_auth_user', JSON.stringify(updated));
+        } else {
+          setUser(null);
+          sessionVerifiedRef.current = false;
+          localStorage.removeItem('wms_auth_user');
+          fetch('/api/session', { method: 'DELETE' }).catch(() => undefined);
         }
       } else if (res.status === 401 || res.status === 403 || res.status === 404) {
-        // Deleted, revoked, or no-longer-authorized accounts must not stay locally authenticated.
         setUser(null);
+        sessionVerifiedRef.current = false;
         localStorage.removeItem('wms_auth_user');
+        fetch('/api/session', { method: 'DELETE' }).catch(() => undefined);
       }
     } catch (e) {
       console.error('Failed to refresh user', e);
+      if (!sessionVerifiedRef.current) {
+        setUser(null);
+        localStorage.removeItem('wms_auth_user');
+        fetch('/api/session', { method: 'DELETE' }).catch(() => undefined);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -89,7 +99,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (!user) return;
     const timer = window.setInterval(() => {
       void refreshUser();
-    }, 15000);
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [refreshUser, user?.email]);
 
@@ -126,6 +136,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           requestedAdminEmail: data.user.requestedAdminEmail,
         };
         setUser(loggedUser);
+        sessionVerifiedRef.current = true;
         localStorage.setItem('wms_auth_user', JSON.stringify(loggedUser));
         return true;
       }
@@ -176,6 +187,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const logout = () => {
     setUser(null);
+    sessionVerifiedRef.current = false;
     localStorage.removeItem('wms_auth_user');
     fetch('/api/session', { method: 'DELETE' }).catch(() => undefined);
   };

@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS shipments (
     receiver_name VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    last_api_synced_at TIMESTAMP NULL, -- SweetTracker API 마지막 동기화 시간 (캐싱 목적)
+    last_api_synced_at TIMESTAMP NULL, -- tracker.delivery API 마지막 동기화 시간 (캐싱 목적)
     INDEX idx_tracking_number (tracking_number)
 );
 

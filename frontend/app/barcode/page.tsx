@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { BrowserMultiFormatReader, IScannerControls } from '@zxing/browser';
+import { BrowserMultiFormatReader } from '@zxing/browser';
 import JsBarcode from 'jsbarcode';
 import {
   Camera,
@@ -53,7 +53,8 @@ export default function BarcodeScannerPage() {
   const [loading, setLoading] = useState(true);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const scannerControlsRef = useRef<IScannerControls | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const scanTimerRef = useRef<number | null>(null);
   const lastScanRef = useRef<{ value: string; at: number }>({ value: '', at: 0 });
 
   // Fetch items from DB
@@ -87,45 +88,78 @@ export default function BarcodeScannerPage() {
   };
 
   const stopCamera = () => {
-    scannerControlsRef.current?.stop();
-    scannerControlsRef.current = null;
+    if (scanTimerRef.current !== null) window.clearInterval(scanTimerRef.current);
+    scanTimerRef.current = null;
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
     setIsCameraActive(false);
   };
 
   useEffect(() => {
     if (!isCameraActive || !videoRef.current) return;
     let cancelled = false;
-    let controls: IScannerControls | null = null;
     const start = async () => {
       try {
-        const reader = new BrowserMultiFormatReader();
-        controls = await reader.decodeFromVideoDevice(undefined, videoRef.current!, (result) => {
-          if (!result) return;
-          const value = result.getText().trim();
-          const now = Date.now();
-          if (!value || (lastScanRef.current.value === value && now - lastScanRef.current.at < 1800)) return;
-          lastScanRef.current = { value, at: now };
-          handleSearch(value);
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: { ideal: 'environment' } },
         });
-        if (cancelled) controls.stop();
-        else scannerControlsRef.current = controls;
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        cameraStreamRef.current = stream;
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        await video.play();
+
+        const reader = new BrowserMultiFormatReader();
+        const canvas = document.createElement('canvas');
+        const scanFrame = () => {
+          if (cancelled || video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || !video.videoWidth) return;
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const context = canvas.getContext('2d');
+          if (!context) return;
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          try {
+            const value = reader.decodeFromCanvas(canvas).getText().trim();
+            const now = Date.now();
+            if (!value || (lastScanRef.current.value === value && now - lastScanRef.current.at < 1800)) return;
+            lastScanRef.current = { value, at: now };
+            handleSearch(value);
+          } catch {
+            // A frame without a readable barcode is expected while the camera is moving.
+          }
+        };
+        scanFrame();
+        scanTimerRef.current = window.setInterval(scanFrame, 5000);
       } catch (error) {
         if (cancelled) return;
         console.error('카메라를 활성화할 수 없습니다:', error);
         setUpdateMsg({ type: 'error', text: '카메라 접근 권한이 없거나 지원되지 않는 브라우저입니다.' });
+        cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+        cameraStreamRef.current = null;
         setIsCameraActive(false);
       }
     };
     void start();
     return () => {
       cancelled = true;
-      controls?.stop();
-      scannerControlsRef.current?.stop();
-      scannerControlsRef.current = null;
+      if (scanTimerRef.current !== null) window.clearInterval(scanTimerRef.current);
+      scanTimerRef.current = null;
+      cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+      cameraStreamRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
     };
   }, [isCameraActive, items]);
 
-  useEffect(() => () => scannerControlsRef.current?.stop(), []);
+  useEffect(() => () => {
+    if (scanTimerRef.current !== null) window.clearInterval(scanTimerRef.current);
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
   // Search item by barcode or name
   const handleSearch = (query: string) => {
@@ -340,8 +374,14 @@ export default function BarcodeScannerPage() {
               <input
                 type="text"
                 value={barcodeInput}
-                onChange={(e) => handleSearch(e.target.value)}
-                placeholder="예: SEA-2026-001 또는 고등어"
+                onChange={(e) => setBarcodeInput(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handleSearch(barcodeInput);
+                  }
+                }}
+                placeholder="스캐너 입력 후 Enter 또는 품목명 입력"
                 className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:bg-white dark:focus:bg-gray-900 transition-all"
               />
             </div>

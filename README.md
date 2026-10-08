@@ -10,7 +10,7 @@
 - 담당자·출처·사유가 포함된 감사 기록과 품목 논리 보관
 - 승인 검토가 가능한 과거 거래 가져오기와 비전 추정 대기열
 - 단위 일치 품목 기준 구역 점유량·공실률 계산
-- 같은 창고 배송 공유, SweetTracker 실제 배송 조회 및 타임라인 저장(키 필요), 완료 24시간 후 목록 제외
+- 같은 창고 배송 공유, tracker.delivery 실시간 배송 조회 및 타임라인 저장(API 키 불필요), 완료 24시간 후 목록 제외
 - 창고별 비전 레퍼런스와 Groq Vision 모니터링. 분석 결과는 관리자 승인 전 재고에 반영되지 않음
 
 대시보드는 충분한 장부가 있는 품목에 한해 28일 이동평균 출고 기준선과 최근 7일 rolling MAPE 백테스트를 표시합니다. 2026-10-07 기준 운영 DB 장부가 비어 있어 현재 실측 MAPE/품절률은 없습니다. 기준선은 학습형 AI 수요예측이나 발주 권고가 아니며, 미충족 주문을 기록하지 않아 품절률 KPI는 산출할 수 없습니다. 실제 장부가 부족하면 수치를 숨기고 `insufficient_data`로 표시합니다.
@@ -87,7 +87,6 @@ Rust API 호스팅 환경에는 다음을 설정합니다.
 - `SUPER_ADMIN_PASSWORD`: 서버 관리자 비밀번호
 - `FRONTEND_ORIGINS`: 배포한 프런트엔드 origin. 예: `https://wms.example.com`
 - `GROQ_API_KEY`, `GROQ_VISION_MODEL`: 이미지 분석을 사용하는 경우 설정하며, 선택 모델은 계정에서 이미지 입력이 허용되어야 합니다.
-- `SWEET_TRACKER_API_KEY`: 실제 배송 조회를 사용하는 경우 설정합니다.
 
 배포 후 `https://<rust-api-origin>/health`가 `{"status":"ok","database":"configured"}`를 반환하는지 확인한 다음, 배포 프런트엔드에서 회원가입을 시험합니다. 프로덕션에서 `RUST_API_URL`이 누락되면 프록시는 `localhost:8080`으로 잘못 요청하지 않고 필요한 환경변수 이름을 `503` 오류로 안내합니다.
 
@@ -109,9 +108,8 @@ npm --prefix frontend audit
 - `FRONTEND_ORIGINS`: Rust API가 허용할 프런트엔드 origin 목록. 쉼표로 여러 origin을 지정할 수 있습니다.
 - `GROQ_API_KEY`: `/api/monitor` 이미지 분석에 필요하며, 계정이 호출 모델을 사용할 수 있어야 합니다.
 - `GROQ_VISION_MODEL`: 비전 모델 ID. 기본값은 `qwen/qwen3.8-27b`이며 해당 계정에서 이미지 입력 권한이 있어야 합니다.
-- `SWEET_TRACKER_API_KEY`: 배송 화면의 실시간 택배사 조회에 필요하며 Rust API의 비밀 설정에 둡니다. 이용권이나 키가 없으면 조회는 오류로 표시됩니다.
 
-Groq Vision은 2026-10-07에 설정된 계정 모델을 합성 이미지로 API 경유 확인했습니다. SweetTracker 키는 현재 미설정입니다. 외부 제공자 오류는 성공으로 가장하지 않고 오류 응답을 반환합니다. 카메라와 라벨은 실제 브라우저·기기·프린터에서 별도 현장 확인이 필요합니다.
+Groq Vision은 2026-10-07에 설정된 계정 모델을 합성 이미지로 API 경유 확인했습니다. tracker.delivery는 Rust API에서 키 없이 호출하도록 구현했으며 실물 운송장에 대한 운영 환경 검증은 별도 확인이 필요합니다. 외부 제공자 오류는 성공으로 가장하지 않고 오류 응답을 반환합니다. 카메라와 라벨은 실제 브라우저·기기·프린터에서 별도 현장 확인이 필요합니다.
 
 Rust 로컬 비밀은 Git에서 제외되는 `rust-backend/.env.local`에 둘 수 있습니다. 이 파일은 `.env`보다 먼저 읽히며 저장소에 올리지 마십시오. 템플릿은 `rust-backend/.env.example`을 참고하십시오.
 

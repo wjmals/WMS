@@ -12,10 +12,22 @@ type Props = { warehouseId?: string; role?: string };
 type SheetRow = Record<string, ExcelJS.CellValue>;
 
 const rustApi = '/api/inventory';
-const normalizeKey = (value: unknown) => String(value ?? '').trim().toLocaleLowerCase().replace(/[\s_\-./()[\]]+/g, '');
+const normalizeKey = (value: unknown) => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase().replace(/[\s_\-./()[\]]+/g, '');
+
+function cellText(value: ExcelJS.CellValue): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value !== 'object' || value instanceof Date) return String(value);
+  const cell = value as { text?: unknown; richText?: Array<{ text?: string }>; result?: unknown };
+  if (Array.isArray(cell.richText)) return cell.richText.map((part) => part.text || '').join('');
+  if (typeof cell.text === 'string') return cell.text;
+  if (cell.result !== undefined) return cellText(cell.result as ExcelJS.CellValue);
+  return '';
+}
 
 export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '' }: Props) {
   const [items, setItems] = useState<InventoryChoice[]>([]);
+  const [inventoryLoaded, setInventoryLoaded] = useState(false);
+  const [inventoryLoadError, setInventoryLoadError] = useState('');
   const [batches, setBatches] = useState<ImportBatch[]>([]);
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -25,17 +37,29 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
 
   const refresh = useCallback(async () => {
     const warehouse = encodeURIComponent(warehouseId);
-    const [itemResponse, batchResponse, ledgerResponse] = await Promise.all([
-      fetch(`/api/inventory?warehouseId=${warehouse}`),
-      fetch(`${rustApi}/imports?warehouseId=${warehouse}`),
-      fetch(`${rustApi}/ledger?warehouseId=${warehouse}&days=12`),
-    ]);
-    const [itemData, batchData, ledgerData] = await Promise.all([
-      itemResponse.json(), batchResponse.json(), ledgerResponse.json(),
-    ]);
-    if (Array.isArray(itemData)) setItems(normalizeApiNumbers(itemData));
-    if (Array.isArray(batchData)) setBatches(batchData);
-    if (Array.isArray(ledgerData)) setLedger(normalizeApiNumbers(ledgerData));
+    setInventoryLoaded(false);
+    try {
+      const [itemResponse, batchResponse, ledgerResponse] = await Promise.all([
+        fetch(`/api/inventory?warehouseId=${warehouse}`),
+        fetch(`${rustApi}/imports?warehouseId=${warehouse}`),
+        fetch(`${rustApi}/ledger?warehouseId=${warehouse}&days=12`),
+      ]);
+      if (!itemResponse.ok) throw new Error('현재 창고 품목 목록을 불러오지 못했습니다. 로그인과 창고 권한을 확인하세요.');
+      const [itemData, batchData, ledgerData] = await Promise.all([
+        itemResponse.json(), batchResponse.json(), ledgerResponse.json(),
+      ]);
+      if (!Array.isArray(itemData)) throw new Error('현재 창고 품목 목록 응답이 올바르지 않습니다.');
+      setItems(normalizeApiNumbers(itemData));
+      setInventoryLoadError('');
+      if (Array.isArray(batchData)) setBatches(batchData);
+      if (Array.isArray(ledgerData)) setLedger(normalizeApiNumbers(ledgerData));
+    } catch (error) {
+      setItems([]);
+      setInventoryLoadError(error instanceof Error ? error.message : '현재 창고 품목 목록을 불러오지 못했습니다.');
+      throw error;
+    } finally {
+      setInventoryLoaded(true);
+    }
   }, [warehouseId]);
 
   useEffect(() => {
@@ -95,22 +119,22 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         return undefined;
       };
       const payloadRows = records.map((record, index) => {
-        const id = String(find(record, 'inventoryItemId', 'inventory_item_id', 'itemId', '품목 ID', '품목코드', '상품코드') ?? '').trim();
-        const name = String(find(record, 'itemName', 'item', '품목명', '상품명', '품목') ?? '').trim();
-        const barcode = String(find(record, 'barcode', 'sku', '바코드', '상품바코드') ?? '').trim();
+        const id = cellText(find(record, 'inventoryItemId', 'inventory_item_id', 'inventoryId', 'itemId', 'id', '품목 ID', '품목코드', '상품코드'));
+        const name = cellText(find(record, 'itemName', 'productName', 'name', 'item', '품목명', '상품명', '품목'));
+        const barcode = cellText(find(record, 'barcode', 'sku', 'productCode', '바코드', '상품바코드'));
         const item = items.find((choice) =>
           (id && normalizeKey(choice.id) === normalizeKey(id))
           || (name && normalizeKey(choice.name) === normalizeKey(name))
           || (barcode && choice.barcode && normalizeKey(choice.barcode) === normalizeKey(barcode))
         );
-        if (!item) throw new Error(`${index + 2}행: UUID·품목명·바코드·SKU를 현재 창고 품목과 일치시키지 못했습니다.`);
-        const rawType = String(find(record, 'movementType', 'movement_type', 'type', '유형', '변동유형') ?? '').trim().toLowerCase();
+        if (!item) throw new Error(`${index + 2}행: 품목 ID 또는 품목명(바코드/SKU 포함)을 현재 창고에서 찾을 수 없습니다.`);
+        const rawType = cellText(find(record, 'movementType', 'movement_type', 'type', '유형', '변동유형')).trim().toLowerCase();
         const movementType = rawType === '입고' ? 'inbound' : rawType === '출고' ? 'outbound' : rawType === '조정' ? 'adjustment' : rawType;
         if (!['inbound', 'outbound', 'adjustment'].includes(movementType)) throw new Error(`${index + 2}행: movementType은 inbound, outbound, adjustment 중 하나여야 합니다.`);
-        const rawQuantity = String(find(record, 'quantity', '수량', 'quantityDelta', '변동수량') ?? '').replaceAll(',', '').trim();
+        const rawQuantity = cellText(find(record, 'quantity', '수량', 'quantityDelta', '변동수량')).replaceAll(',', '').trim();
         const quantity = Number(rawQuantity);
         if (!Number.isFinite(quantity) || quantity === 0 || (movementType !== 'adjustment' && quantity < 0)) throw new Error(`${index + 2}행: 수량은 0이 아닌 숫자여야 합니다.`);
-        const note = String(find(record, 'note', 'reason', '사유', '변동사유') ?? '').trim();
+        const note = cellText(find(record, 'note', 'reason', '사유', '변동사유')).trim();
         if (!note) throw new Error(`${index + 2}행: 거래 사유가 필요합니다.`);
         const occurredAt = find(record, 'occurredAt', 'occurred_at', 'date', '거래일시', '일자');
         return {
@@ -118,9 +142,9 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           occurredAt: parseDate(occurredAt as ExcelJS.CellValue),
           movementType,
           quantity,
-          quantityUnit: String(find(record, 'quantityUnit', 'unit', '단위') ?? item.unit).trim(),
+          quantityUnit: cellText(find(record, 'quantityUnit', 'unit', '단위') ?? item.unit).trim(),
           note,
-          reference: String(find(record, 'reference', 'document', '참조', '전표번호') ?? '').trim(),
+          reference: cellText(find(record, 'reference', 'document', '참조', '전표번호')).trim(),
         };
       });
       const response = await fetch(`${rustApi}/import`, {
@@ -178,8 +202,9 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
               <FileSpreadsheet size={14} /> <span className="truncate">{file?.name || '거래 엑셀 선택'}</span>
               <input type="file" accept=".xlsx" className="hidden" onChange={(event) => setFile(event.target.files?.[0] || null)} />
             </label>
-            <button disabled={!file || busy} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '처리 중' : '승인 요청'}</button>
+            <button disabled={!file || busy || !inventoryLoaded || !!inventoryLoadError || items.length === 0} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '처리 중' : '승인 요청'}</button>
           </div>
+          {inventoryLoadError ? <p role="alert" className="text-xs text-red-600">{inventoryLoadError}</p> : !inventoryLoaded ? <p role="status" className="text-xs text-textMuted">현재 창고 품목을 불러오는 중입니다.</p> : items.length === 0 ? <p role="status" className="text-xs text-amber-700">현재 창고에 등록된 품목이 없습니다.</p> : null}
           <p className="text-xs leading-relaxed text-textMuted">UUID·품목명·SKU/바코드, 거래 시각, 유형, 수량, 단위, 사유를 사용합니다. 승인 전에는 잔량이 바뀌지 않습니다.</p>
           {notice && <p role="status" className="text-xs text-primary">{notice}</p>}
           <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">

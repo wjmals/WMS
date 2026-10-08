@@ -1070,7 +1070,7 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_zone_occupancy, classify_stock, delivery_warehouse_scope, evaluate_moving_average, next_delivery_state, sweet_tracker_status, AuthenticatedUser};
+    use super::{calculate_zone_occupancy, classify_stock, delivery_warehouse_scope, evaluate_moving_average, next_delivery_state, AuthenticatedUser};
     use rust_decimal::Decimal;
 
     #[test]
@@ -1112,14 +1112,6 @@ mod tests {
             ..manager_without_warehouse
         };
         assert_eq!(delivery_warehouse_scope(&server_admin).unwrap(), None);
-    }
-
-    #[test]
-    fn sweet_tracker_status_maps_carrier_levels() {
-        assert_eq!(sweet_tracker_status(1, "상품인수").0, "AT_PICKUP");
-        assert_eq!(sweet_tracker_status(3, "간선상차").0, "IN_TRANSIT");
-        assert_eq!(sweet_tracker_status(4, "배달출발").0, "OUT_FOR_DELIVERY");
-        assert_eq!(sweet_tracker_status(5, "배송완료").0, "DELIVERED");
     }
 
     #[test]
@@ -1672,53 +1664,89 @@ async fn track_delivery(
     Json(input): Json<TrackDeliveryInput>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
-    let api_key = env::var("SWEET_TRACKER_API_KEY").map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "SWEET_TRACKER_API_KEY is not configured".to_string()))?;
     let warehouse_id = delivery_warehouse_scope(&user)?;
     let delivery = sqlx::query_as::<_, (String, String, String)>(
         "SELECT carrier_code, invoice_no, warehouse_id FROM delivery_tracking WHERE id = $1 AND ($2::text IS NULL OR warehouse_id = $2)",
     ).bind(input.id).bind(warehouse_id).fetch_optional(&db).await.map_err(internal_error)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "배송 항목을 찾을 수 없습니다.".to_string()))?;
-    let response = reqwest::Client::new()
-        .post("https://info.sweettracker.co.kr/api/v1/trackingInfo")
-        .form(&[("t_key", api_key), ("t_code", delivery.0), ("t_invoice", delivery.1)])
-        .send().await.map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
-    if !response.status().is_success() {
-        return Err((StatusCode::BAD_GATEWAY, format!("SweetTracker returned {}", response.status())));
-    }
-    let body: Value = response.json().await.map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
-    if body.get("code").and_then(Value::as_str).is_some_and(|code| code != "success")
-        || body.get("msg").and_then(Value::as_str).is_some_and(|message| !message.is_empty() && body.get("trackingDetails").is_none())
-    {
-        return Err((StatusCode::BAD_GATEWAY, body.get("msg").and_then(Value::as_str).unwrap_or("택배사 조회에 실패했습니다.").to_string()));
-    }
-    let details = body.get("trackingDetails").cloned().filter(Value::is_array).unwrap_or_else(|| Value::Array(Vec::new()));
-    if details.as_array().is_none_or(Vec::is_empty) {
-        return Err((StatusCode::NOT_FOUND, body.get("msg").and_then(Value::as_str).unwrap_or("배송 이력이 아직 없습니다.").to_string()));
-    }
-    let last = details.as_array().and_then(|steps| steps.last()).cloned().unwrap_or(Value::Null);
-    let current_location = last.get("where").and_then(Value::as_str).unwrap_or("배송 정보 수신").to_string();
-    let latest_kind = last.get("kind").and_then(Value::as_str).unwrap_or("배송 조회").to_string();
-    let level = body.get("level").and_then(Value::as_i64).unwrap_or(1);
-    let (status_code, is_delivered) = sweet_tracker_status(level, &latest_kind);
-    let status_label = last.get("status").and_then(Value::as_str).unwrap_or(&latest_kind).to_string();
-    let result = sqlx::query("UPDATE delivery_tracking SET tracking_details = $1, current_location = $2, status = $3, status_code = $4, delivered_at = CASE WHEN $5 THEN COALESCE(delivered_at, now()) ELSE NULL END, updated_at = now() WHERE id = $6 AND warehouse_id = $7")
-        .bind(&details).bind(&current_location).bind(&status_label).bind(status_code).bind(is_delivered).bind(input.id).bind(&delivery.2)
-        .execute(&db).await.map_err(internal_error)?;
-    if result.rows_affected() == 0 { return Err((StatusCode::NOT_FOUND, "배송 항목을 찾을 수 없습니다.".to_string())); }
-    Ok(Json(serde_json::json!({ "success": true, "status": status_label, "statusCode": status_code, "currentLocation": current_location, "trackingDetails": details, "updatedAt": Utc::now() })))
-}
 
-fn sweet_tracker_status(level: i64, latest_kind: &str) -> (&'static str, bool) {
-    let lower = latest_kind.to_lowercase();
-    if lower.contains("배송완료") || lower.contains("배달완료") || level >= 5 {
-        ("DELIVERED", true)
-    } else if lower.contains("배달출발") || lower.contains("배송출발") || level == 4 {
-        ("OUT_FOR_DELIVERY", false)
-    } else if lower.contains("인수") || lower.contains("접수") || level == 1 {
-        ("AT_PICKUP", false)
-    } else {
-        ("IN_TRANSIT", false)
+    // 택배사 코드 → apis.tracker.delivery carrier ID 매핑
+    let carrier_id = match delivery.0.as_str() {
+        "01" => "kr.epost",
+        "04" => "kr.cjlogistics",
+        "05" => "kr.hanjin",
+        "06" => "kr.logen",
+        "08" => "kr.lotte",
+        "11" => "kr.ilyanglogis",
+        "23" => "kr.kdexp",
+        "22" => "kr.daesin",
+        "32" => "kr.hdexp",
+        "24" => "kr.cvsnet",
+        _ => "kr.cjlogistics",
+    };
+
+    let url = format!("https://apis.tracker.delivery/carriers/{}/tracks/{}", carrier_id, delivery.1);
+    let response = reqwest::Client::new()
+        .get(&url)
+        .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(8))
+        .send().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("배송 조회 연결 실패: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err((StatusCode::BAD_GATEWAY, format!("배송사 조회 실패 ({})", response.status())));
     }
+
+    let body: Value = response.json().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("응답 파싱 실패: {}", e)))?;
+
+    // apis.tracker.delivery 응답 파싱
+    let state_id = body.get("state").and_then(|s| s.get("id")).and_then(Value::as_str).unwrap_or("unknown");
+    let (status_code, is_delivered) = match state_id {
+        "delivered" => ("DELIVERED", true),
+        "out_for_delivery" => ("OUT_FOR_DELIVERY", false),
+        "at_pickup" | "information_received" => ("AT_PICKUP", false),
+        _ => ("IN_TRANSIT", false),
+    };
+    let status_label = body.get("state").and_then(|s| s.get("text")).and_then(Value::as_str)
+        .unwrap_or(match status_code { "DELIVERED" => "배송완료", "OUT_FOR_DELIVERY" => "배달출발", "AT_PICKUP" => "상품인수", _ => "이동중" })
+        .to_string();
+
+    let progresses = body.get("progresses").and_then(Value::as_array).cloned().unwrap_or_default();
+    let details: Vec<Value> = progresses.iter().map(|p| {
+        let time = p.get("time").and_then(Value::as_str).unwrap_or("").to_string();
+        let location = p.get("location").and_then(|l| l.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
+        let kind = p.get("description").and_then(Value::as_str)
+            .or_else(|| p.get("status").and_then(|s| s.get("text")).and_then(Value::as_str))
+            .unwrap_or("").to_string();
+        serde_json::json!({ "time": time, "where": location, "kind": kind })
+    }).collect();
+
+    let current_location = details.last()
+        .and_then(|d| d.get("where")).and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let kind = details.last().and_then(|d| d.get("kind")).and_then(Value::as_str).unwrap_or("");
+            if kind.is_empty() { s.to_string() } else { format!("{} ({})", s, kind) }
+        })
+        .unwrap_or_else(|| status_label.clone());
+
+    let details_json = Value::Array(details);
+    let result = sqlx::query("UPDATE delivery_tracking SET tracking_details = $1, current_location = $2, status = $3, status_code = $4, delivered_at = CASE WHEN $5 THEN COALESCE(delivered_at, now()) ELSE NULL END, updated_at = now() WHERE id = $6 AND warehouse_id = $7")
+        .bind(&details_json).bind(&current_location).bind(&status_label).bind(status_code).bind(is_delivered).bind(input.id).bind(&delivery.2)
+        .execute(&db).await.map_err(internal_error)?;
+
+    if result.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, "배송 항목을 찾을 수 없습니다.".to_string()));
+    }
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "status": status_label,
+        "statusCode": status_code,
+        "currentLocation": current_location,
+        "trackingDetails": details_json,
+        "updatedAt": Utc::now()
+    })))
 }
 
 fn calculate_zone_occupancy(current_stock: Decimal, capacity: Decimal) -> (f64, &'static str, &'static str) {

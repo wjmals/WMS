@@ -107,8 +107,8 @@ export default function DeliveryManagementPage() {
       const result = await response.json();
       if (!response.ok) {
         const reason = String(result.error || '택배사 배송 조회에 실패했습니다.');
-        if (response.status === 503 && reason.includes('SWEET_TRACKER_API_KEY')) {
-          throw new Error('실시간 택배 조회 설정이 완료되지 않았습니다. 운영자에게 문의해주세요.');
+        if (reason.includes('SWEET_TRACKER_API_KEY')) {
+          throw new Error('백엔드가 이전 SweetTracker 설정으로 실행 중입니다. tracker.delivery를 사용하는 최신 Rust API를 배포해야 합니다.');
         }
         throw new Error(reason);
       }
