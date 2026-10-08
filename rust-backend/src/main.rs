@@ -221,13 +221,26 @@ struct HistoricalMovementImport {
     warehouse_id: String,
     #[serde(alias = "sourceName")]
     source_name: String,
+    #[serde(default, alias = "newItems")]
+    new_items: Vec<HistoricalInventorySeed>,
     rows: Vec<HistoricalMovementRow>,
+}
+
+#[derive(Deserialize)]
+struct HistoricalInventorySeed {
+    name: String,
+    current: Decimal,
+    safe: Option<Decimal>,
+    unit: String,
+    barcode: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct HistoricalMovementRow {
     #[serde(alias = "inventoryItemId")]
-    inventory_item_id: Uuid,
+    inventory_item_id: Option<Uuid>,
+    #[serde(alias = "itemName")]
+    item_name: Option<String>,
     #[serde(alias = "occurredAt")]
     occurred_at: DateTime<Utc>,
     #[serde(alias = "movementType")]
@@ -770,8 +783,8 @@ async fn submit_movement_import(
     axum::Extension(user): axum::Extension<AuthenticatedUser>,
     Json(input): Json<HistoricalMovementImport>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, String)> {
-    if input.rows.is_empty() || input.rows.len() > 5000 || input.source_name.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "sourceName and 1 to 5000 rows are required".to_string()));
+    if input.rows.len() > 5000 || input.new_items.len() > 5000 || (input.rows.is_empty() && input.new_items.is_empty()) || input.source_name.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "sourceName and up to 5000 rows or new items are required".to_string()));
     }
     let warehouse_id = if user.role == "서버 관리자" {
         input.warehouse_id.clone()
@@ -782,22 +795,61 @@ async fn submit_movement_import(
     };
     let db = state.db.ok_or_else(database_not_configured)?;
     let mut transaction = db.begin().await.map_err(internal_error)?;
-    let batch_id = Uuid::new_v4();
+    let mut created_items = 0;
+    for item in input.new_items {
+        let name = item.name.trim();
+        let unit = item.unit.trim();
+        let barcode = item.barcode.as_deref().map(str::trim).filter(|value| !value.is_empty());
+        let safe = item.safe.unwrap_or(Decimal::ZERO);
+        if name.is_empty() || name.chars().count() > 200 || unit.is_empty() || unit.chars().count() > 16 || item.current < Decimal::ZERO || safe < Decimal::ZERO {
+            return Err((StatusCode::BAD_REQUEST, format!("new inventory item '{}' has invalid name, unit, current, or safe stock", name)));
+        }
+        if sqlx::query_scalar::<_, Uuid>("SELECT id FROM inventory_items WHERE warehouse_id=$1 AND lower(name)=lower($2) AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1")
+            .bind(&warehouse_id).bind(name).fetch_optional(&mut *transaction).await.map_err(internal_error)?.is_some() {
+            continue;
+        }
+        let (status, status_label, diff_text, recommendation) = classify_stock(item.current, safe, unit);
+        let created = sqlx::query_as::<_, (Uuid, String)>(
+            "INSERT INTO inventory_items (warehouse_id,name,barcode,unit,current,safe,status,status_label,diff_text,recommendation,cycle,date)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'월간',CURRENT_DATE)
+             RETURNING id,name",
+        ).bind(&warehouse_id).bind(name).bind(barcode).bind(unit).bind(item.current).bind(safe)
+            .bind(status).bind(status_label).bind(diff_text).bind(recommendation)
+            .fetch_one(&mut *transaction).await.map_err(internal_error)?;
+        sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email) VALUES ($1,$2,$3,'initial',$4,$4,'Excel initial stock','historical_import',$5,$6)")
+            .bind(&warehouse_id).bind(created.0).bind(&created.1).bind(item.current).bind(&user.id).bind(&user.email)
+            .execute(&mut *transaction).await.map_err(internal_error)?;
+        sqlx::query("INSERT INTO inventory_audit_events (warehouse_id,actor_id,actor_email,action,entity_type,entity_id,after_data,reason,source) VALUES ($1,$2,$3,'create','inventory_item',$4,$5,'Excel initial stock','historical_import')")
+            .bind(&warehouse_id).bind(&user.id).bind(&user.email).bind(created.0.to_string())
+            .bind(serde_json::json!({"name":created.1,"current":item.current,"safe":safe,"unit":unit}))
+            .execute(&mut *transaction).await.map_err(internal_error)?;
+        created_items += 1;
+    }
+
     let row_count = input.rows.len();
-    sqlx::query("INSERT INTO inventory_movement_import_batches (id,warehouse_id,submitted_by,submitted_email,source_name,row_count) VALUES ($1,$2,$3,$4,$5,$6)")
-        .bind(batch_id).bind(&warehouse_id).bind(&user.id).bind(&user.email).bind(input.source_name.trim()).bind(input.rows.len() as i32)
-        .execute(&mut *transaction).await.map_err(internal_error)?;
+    let batch_id = if row_count > 0 {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO inventory_movement_import_batches (id,warehouse_id,submitted_by,submitted_email,source_name,row_count) VALUES ($1,$2,$3,$4,$5,$6)")
+            .bind(id).bind(&warehouse_id).bind(&user.id).bind(&user.email).bind(input.source_name.trim()).bind(row_count as i32)
+            .execute(&mut *transaction).await.map_err(internal_error)?;
+        Some(id)
+    } else { None };
     for row in input.rows {
         if !matches!(row.movement_type.as_str(), "inbound" | "outbound" | "adjustment") || row.quantity.is_zero() || row.occurred_at >= Utc::now() || row.note.trim().is_empty() {
             return Err((StatusCode::BAD_REQUEST, "each row needs a historical date, valid movement type, nonzero quantity, and reason".to_string()));
         }
-        let item = sqlx::query_as::<_, (String, String, Option<String>, Decimal)>("SELECT name,unit,package_unit,package_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL")
-            .bind(row.inventory_item_id).bind(&warehouse_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("inventory item {} is unavailable in this warehouse", row.inventory_item_id)))?;
-        let entered_unit = row.quantity_unit.as_deref().unwrap_or(&item.1);
-        let multiplier = if entered_unit == item.1 { Decimal::ONE }
-            else if item.2.as_deref() == Some(entered_unit) { item.3 }
-            else { return Err((StatusCode::BAD_REQUEST, format!("unit '{}' does not match item '{}'", entered_unit, item.0))); };
+        let item = if let Some(item_id) = row.inventory_item_id {
+            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL")
+                .bind(item_id).bind(&warehouse_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
+        } else if let Some(item_name) = row.item_name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size FROM inventory_items WHERE warehouse_id=$1 AND lower(name)=lower($2) AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1")
+                .bind(&warehouse_id).bind(item_name).fetch_optional(&mut *transaction).await.map_err(internal_error)?
+        } else { None }
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "inventory item is unavailable in this warehouse".to_string()))?;
+        let entered_unit = row.quantity_unit.as_deref().unwrap_or(&item.2);
+        let multiplier = if entered_unit == item.2 { Decimal::ONE }
+            else if item.3.as_deref() == Some(entered_unit) { item.4 }
+            else { return Err((StatusCode::BAD_REQUEST, format!("unit '{}' does not match item '{}'", entered_unit, item.1))); };
         let magnitude = row.quantity.abs() * multiplier;
         let delta = match row.movement_type.as_str() {
             "inbound" => magnitude,
@@ -805,11 +857,11 @@ async fn submit_movement_import(
             _ => row.quantity * multiplier,
         };
         sqlx::query("INSERT INTO inventory_movement_import_rows (batch_id,inventory_item_id,item_name,occurred_at,movement_type,quantity_delta,note,reference) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(batch_id).bind(row.inventory_item_id).bind(item.0).bind(row.occurred_at).bind(row.movement_type).bind(delta).bind(row.note.trim()).bind(row.reference.unwrap_or_default())
+            .bind(batch_id.unwrap()).bind(item.0).bind(item.1).bind(row.occurred_at).bind(row.movement_type).bind(delta).bind(row.note.trim()).bind(row.reference.unwrap_or_default())
             .execute(&mut *transaction).await.map_err(internal_error)?;
     }
     transaction.commit().await.map_err(internal_error)?;
-    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"batchId":batch_id,"status":"PENDING","rows":row_count}))))
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"batchId":batch_id,"status":if batch_id.is_some(){"PENDING"}else{"IMPORTED"},"rows":row_count,"createdItems":created_items}))))
 }
 
 async fn list_inventory_ledger(

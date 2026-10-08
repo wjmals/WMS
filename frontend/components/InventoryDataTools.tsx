@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { Check, Download, FileSpreadsheet, RefreshCw, Upload, X } from 'lucide-react';
+import { AlertTriangle, Check, Download, FileSpreadsheet, RefreshCw, Upload, X } from 'lucide-react';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
 
-type InventoryChoice = { id: string; name: string; barcode?: string | null; unit: string; packageUnit: string | null };
+type InventoryChoice = { id: string; name: string; barcode?: string | null; unit: string; packageUnit: string | null; safe: number };
 type ImportBatch = { id: string; sourceName: string; submittedEmail: string; rowCount: number; status: string; createdAt: string; reviewNote: string };
 type LedgerRow = { id: string; itemName: string; movementType: string; quantityDelta: number; balanceAfter: number; reason: string; source: string; operator: string | null; occurredAt: string };
 type Props = { warehouseId?: string; role?: string };
@@ -74,14 +74,15 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   }, [refresh]);
 
   const downloadTemplate = async () => {
-    if (!inventoryLoaded || inventoryLoadError || items.length === 0) {
+    if (!inventoryLoaded || inventoryLoadError) {
       setNotice(inventoryLoadError || '현재 창고의 품목을 불러온 뒤 양식을 다운로드할 수 있습니다.');
       return;
     }
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Transactions');
     sheet.addRow(['occurredAt', 'inventoryItemId', 'itemName', 'barcode', 'movementType', 'quantity', 'unit', 'note', 'reference']);
-    sheet.addRow(['2026-01-15T09:00:00Z', items[0]?.id || '품목 UUID', items[0]?.name || '품목명', items[0]?.barcode || '', 'inbound', 2.5, items[0]?.unit || '톤', '기존 거래 복원', '전표-001']);
+    const exampleItem = items[0];
+    sheet.addRow(['2026-01-15T09:00:00Z', exampleItem?.id || '', exampleItem?.name || '신규 품목명', exampleItem?.barcode || '', exampleItem ? 'inbound' : 'initial', exampleItem ? 2.5 : 10, exampleItem?.unit || '톤', exampleItem ? '기존 거래 복원' : '기초 재고', '전표-001']);
     sheet.getColumn(1).width = 26;
     sheet.columns.slice(1).forEach((column) => { column.width = 22; });
     const buffer = await workbook.xlsx.writeBuffer();
@@ -129,45 +130,89 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         }
         return undefined;
       };
-      const payloadRows = records.map((record, index) => {
+      const parseEntry = (record: SheetRow, index: number) => {
         const id = cellText(find(record, 'inventoryItemId', 'inventory_item_id', 'inventoryId', 'itemId', 'id', '품목 ID', '품목코드', '상품코드'));
         const name = cellText(find(record, 'itemName', 'productName', 'name', 'item', '품목명', '상품명', '품목'));
         const barcode = cellText(find(record, 'barcode', 'sku', 'productCode', '바코드', '상품바코드'));
-        const item = items.find((choice) =>
-          (id && normalizeKey(choice.id) === normalizeKey(id))
-          || (name && normalizeKey(choice.name) === normalizeKey(name))
-          || (barcode && choice.barcode && normalizeKey(choice.barcode) === normalizeKey(barcode))
-        );
-        if (!item) throw new Error(`${index + 2}행: 품목 ID 또는 품목명(바코드/SKU 포함)을 현재 창고에서 찾을 수 없습니다.`);
-        const rawType = cellText(find(record, 'movementType', 'movement_type', 'type', '유형', '변동유형')).trim().toLowerCase();
+        const rawType = cellText(find(record, 'movementType', 'movement_type', 'type', '유형', '변동유형')).trim().toLowerCase().replace(/[\s-]+/g, '_');
         const movementType = rawType === '입고' ? 'inbound' : rawType === '출고' ? 'outbound' : rawType === '조정' ? 'adjustment' : rawType;
-        if (!['inbound', 'outbound', 'adjustment'].includes(movementType)) throw new Error(`${index + 2}행: movementType은 inbound, outbound, adjustment 중 하나여야 합니다.`);
         const rawQuantity = cellText(find(record, 'quantity', '수량', 'quantityDelta', '변동수량')).replaceAll(',', '').trim();
         const quantity = Number(rawQuantity);
-        if (!Number.isFinite(quantity) || quantity === 0 || (movementType !== 'adjustment' && quantity < 0)) throw new Error(`${index + 2}행: 수량은 0이 아닌 숫자여야 합니다.`);
-        const note = cellText(find(record, 'note', 'reason', '사유', '변동사유')).trim();
-        if (!note) throw new Error(`${index + 2}행: 거래 사유가 필요합니다.`);
-        const occurredAt = find(record, 'occurredAt', 'occurred_at', 'date', '거래일시', '일자');
-        return {
-          inventoryItemId: item.id,
+        if (movementType !== 'vision_estimate' && (!Number.isFinite(quantity) || (movementType !== 'initial' && quantity === 0))) {
+          throw new Error(`${index + 2}행: 수량은 유효한 숫자여야 합니다.`);
+        }
+        return { id, name, barcode, movementType, quantity, record, index };
+      };
+      const entries = records.map(parseEntry);
+      const findExistingItem = (entry: (typeof entries)[number]) => items.find((choice) =>
+        (entry.id && normalizeKey(choice.id) === normalizeKey(entry.id))
+        || (entry.name && normalizeKey(choice.name) === normalizeKey(entry.name))
+        || (entry.barcode && choice.barcode && normalizeKey(choice.barcode) === normalizeKey(entry.barcode))
+      );
+      const seedItems = new Map<string, { name: string; current: number; safe: number; unit: string; barcode?: string }>();
+      for (const entry of entries) {
+        if (entry.movementType !== 'initial' || findExistingItem(entry)) continue;
+        if (!entry.name) throw new Error(`${entry.index + 2}행: initial 행에는 신규 품목명이 필요합니다.`);
+        if (entry.quantity < 0) throw new Error(`${entry.index + 2}행: initial 시작 수량은 음수일 수 없습니다.`);
+        const key = normalizeKey(entry.name);
+        if (seedItems.has(key)) throw new Error(`${entry.index + 2}행: '${entry.name}'의 initial 시작 수량이 중복되었습니다.`);
+        const unit = cellText(find(entry.record, 'quantityUnit', 'unit', '단위')).trim();
+        if (!unit) throw new Error(`${entry.index + 2}행: 신규 품목 '${entry.name}'의 단위가 필요합니다.`);
+        seedItems.set(key, { name: entry.name.trim(), current: entry.quantity, safe: 0, unit, barcode: entry.barcode || undefined });
+      }
+
+      const payloadRows: Array<Record<string, unknown>> = [];
+      let skippedEstimates = 0;
+      for (const entry of entries) {
+        if (entry.movementType === 'initial') continue;
+        if (entry.movementType === 'vision_estimate') {
+          skippedEstimates += 1;
+          continue;
+        }
+        if (!['inbound', 'outbound', 'adjustment'].includes(entry.movementType)) {
+          throw new Error(`${entry.index + 2}행: movementType은 initial, inbound, outbound, adjustment, vision_estimate 중 하나여야 합니다.`);
+        }
+        if (entry.movementType !== 'adjustment' && entry.quantity < 0) {
+          entry.quantity = Math.abs(entry.quantity);
+        }
+        const existing = findExistingItem(entry);
+        const seed = entry.name ? seedItems.get(normalizeKey(entry.name)) : undefined;
+        if (!existing && !seed) {
+          throw new Error(`${entry.index + 2}행: '${entry.name || entry.id || entry.barcode || '(품목 정보 없음)'}' 품목이 현재 창고에 없습니다. 신규 품목은 initial 시작 수량 행이 필요합니다.`);
+        }
+        const note = cellText(find(entry.record, 'note', 'reason', '사유', '변동사유')).trim();
+        if (!note) throw new Error(`${entry.index + 2}행: 거래 사유가 필요합니다.`);
+        const occurredAt = find(entry.record, 'occurredAt', 'occurred_at', 'date', '거래일시', '일자');
+        const quantityUnit = cellText(find(entry.record, 'quantityUnit', 'unit', '단위') ?? existing?.unit ?? seed?.unit).trim();
+        if (seed) {
+          const delta = entry.movementType === 'outbound' ? -Math.abs(entry.quantity) : entry.quantity;
+          seed.current += delta;
+          if (seed.current < 0) throw new Error(`${entry.index + 2}행: '${seed.name}'의 시작 수량과 거래 이력을 계산하면 현재 재고가 음수가 됩니다.`);
+        }
+        payloadRows.push({
+          ...(existing ? { inventoryItemId: existing.id } : { itemName: entry.name }),
           occurredAt: parseDate(occurredAt as ExcelJS.CellValue),
-          movementType,
-          quantity,
-          quantityUnit: cellText(find(record, 'quantityUnit', 'unit', '단위') ?? item.unit).trim(),
+          movementType: entry.movementType,
+          quantity: entry.quantity,
+          quantityUnit,
           note,
-          reference: cellText(find(record, 'reference', 'document', '참조', '전표번호')).trim(),
-        };
-      });
+          reference: cellText(find(entry.record, 'reference', 'document', '참조', '전표번호')).trim(),
+        });
+      }
       const response = await fetch(`${rustApi}/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ warehouseId, sourceName: file.name, rows: payloadRows }),
+        body: JSON.stringify({ warehouseId, sourceName: file.name, newItems: Array.from(seedItems.values()), rows: payloadRows }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '과거 거래를 제출하지 못했습니다.');
       setFile(null);
-      setNotice(`${result.rows}건을 승인 대기 상태로 등록했습니다. 현재 잔량은 변경되지 않았습니다.`);
       await refresh();
+      const parts = [];
+      if (result.createdItems) parts.push(`신규 품목 ${result.createdItems}개를 안전재고 0으로 등록했습니다.`);
+      if (result.rows) parts.push(`${result.rows}건의 거래를 승인 대기 상태로 등록했습니다.`);
+      if (skippedEstimates) parts.push(`vision_estimate ${skippedEstimates}건은 재고에 반영하지 않았습니다.`);
+      setNotice(parts.join(' ') || '엑셀 데이터를 처리했습니다.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '엑셀 파일을 읽지 못했습니다.');
     } finally {
@@ -208,15 +253,16 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       <div className="grid gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => void downloadTemplate()} disabled={!inventoryLoaded || !!inventoryLoadError || items.length === 0} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"><Download size={14} />엑셀 양식</button>
+            <button onClick={() => void downloadTemplate()} disabled={!inventoryLoaded || !!inventoryLoadError} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"><Download size={14} />엑셀 양식</button>
             <label className="inline-flex max-w-full items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-semibold cursor-pointer">
               <FileSpreadsheet size={14} /> <span className="truncate">{file?.name || '거래 엑셀 선택'}</span>
               <input type="file" accept=".xlsx" className="hidden" onChange={(event) => setFile(event.target.files?.[0] || null)} />
             </label>
-            <button disabled={!file || busy || !inventoryLoaded || !!inventoryLoadError || items.length === 0} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '처리 중' : '승인 요청'}</button>
+            <button disabled={!file || busy || !inventoryLoaded || !!inventoryLoadError} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '처리 중' : '승인 요청'}</button>
           </div>
           {inventoryLoadError ? <p role="alert" className="text-xs text-red-600">{inventoryLoadError}</p> : !inventoryLoaded ? <p role="status" className="text-xs text-textMuted">현재 창고 품목을 불러오는 중입니다.</p> : items.length === 0 ? <p role="status" className="text-xs text-amber-700">현재 창고에 등록된 품목이 없습니다.</p> : null}
-          <p className="text-xs leading-relaxed text-textMuted">UUID·품목명·SKU/바코드, 거래 시각, 유형, 수량, 단위, 사유를 사용합니다. 승인 전에는 잔량이 바뀌지 않습니다.</p>
+          {items.some((item) => item.safe <= 0) && <div role="alert" className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"><p className="flex items-center gap-2 font-bold"><AlertTriangle size={15} />안전재고 미설정 품목 {items.filter((item) => item.safe <= 0).length}개</p><p>안전재고가 0인 품목은 부족/과다 상태 판정이 정확하지 않습니다. 재고 화면에서 안전재고를 설정하세요.</p><ul className="list-inside list-disc">{items.filter((item) => item.safe <= 0).slice(0, 8).map((item) => <li key={item.id}>{item.name}</li>)}</ul></div>}
+          <p className="text-xs leading-relaxed text-textMuted">신규 품목은 initial 행으로 시작 수량을 만듭니다. 안전재고는 0으로 등록되며 별도 경고에 표시됩니다. inbound/outbound/adjustment는 승인 대기 이력, vision_estimate는 미반영 처리됩니다.</p>
           {notice && <p role="status" className="text-xs text-primary">{notice}</p>}
           <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">
             <h3 className="text-sm font-bold">가져오기 검토 {batches.filter((batch) => batch.status === 'PENDING').length}</h3>
