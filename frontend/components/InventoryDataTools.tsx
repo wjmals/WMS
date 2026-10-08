@@ -188,6 +188,12 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         const note = cellText(find(entry.record, 'note', 'reason', '사유', '변동사유')).trim();
         if (!note) throw new Error(`${entry.index + 2}행: 거래 사유가 필요합니다.`);
         const occurredAt = find(entry.record, 'occurredAt', 'occurred_at', 'date', '거래일시', '일자');
+        let parsedDate: string;
+        try {
+          parsedDate = parseDate(occurredAt as ExcelJS.CellValue);
+        } catch {
+          throw new Error(`${entry.index + 2}행: 거래일시를 읽을 수 없습니다.`);
+        }
         const quantityUnit = cellText(find(entry.record, 'quantityUnit', 'unit', '단위') ?? existing?.unit ?? seed?.unit).trim();
         if (seed) {
           const delta = entry.movementType === 'outbound' ? -Math.abs(entry.quantity) : entry.quantity;
@@ -195,8 +201,9 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           if (seed.current < 0) throw new Error(`${entry.index + 2}행: '${seed.name}'의 시작 수량과 거래 이력을 계산하면 현재 재고가 음수가 됩니다.`);
         }
         payloadRows.push({
+          sourceRow: entry.index + 2,
           ...(existing ? { inventoryItemId: existing.id } : { itemName: entry.name }),
-          occurredAt: parseDate(occurredAt as ExcelJS.CellValue),
+          occurredAt: parsedDate,
           movementType: entry.movementType,
           quantity: entry.quantity,
           quantityUnit,
@@ -209,8 +216,14 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ warehouseId, sourceName: file.name, newItems: Array.from(seedItems.values()), rows: payloadRows }),
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || '과거 거래를 제출하지 못했습니다.');
+      const responseText = await response.text();
+      let result: { error?: string; rows?: number; createdItems?: number };
+      try {
+        result = JSON.parse(responseText);
+      } catch {
+        result = { error: responseText.trim() || `서버 응답을 읽지 못했습니다 (${response.status}).` };
+      }
+      if (!response.ok) throw new Error(result.error || `과거 거래를 제출하지 못했습니다 (${response.status}).`);
       setFile(null);
       await refresh();
       const parts = [];

@@ -237,6 +237,8 @@ struct HistoricalInventorySeed {
 
 #[derive(Deserialize)]
 struct HistoricalMovementRow {
+    #[serde(alias = "sourceRow")]
+    source_row: Option<usize>,
     #[serde(alias = "inventoryItemId")]
     inventory_item_id: Option<Uuid>,
     #[serde(alias = "itemName")]
@@ -834,9 +836,19 @@ async fn submit_movement_import(
             .execute(&mut *transaction).await.map_err(internal_error)?;
         Some(id)
     } else { None };
-    for row in input.rows {
-        if !matches!(row.movement_type.as_str(), "inbound" | "outbound" | "adjustment") || row.quantity.is_zero() || row.occurred_at >= Utc::now() || row.note.trim().is_empty() {
-            return Err((StatusCode::BAD_REQUEST, "each row needs a historical date, valid movement type, nonzero quantity, and reason".to_string()));
+    for (row_index, row) in input.rows.into_iter().enumerate() {
+        let source_row = row.source_row.unwrap_or(row_index + 2);
+        if !matches!(row.movement_type.as_str(), "inbound" | "outbound" | "adjustment") {
+            return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래 유형 '{}'은 inbound, outbound, adjustment 중 하나여야 합니다.", source_row, row.movement_type)));
+        }
+        if row.quantity.is_zero() {
+            return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래 수량은 0일 수 없습니다. 0 수량 행은 최신 화면에서 자동 제외되어야 합니다. 화면을 새로고침하고 다시 업로드하세요.", source_row)));
+        }
+        if row.occurred_at >= Utc::now() {
+            return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래일은 현재보다 과거여야 합니다.", source_row)));
+        }
+        if row.note.trim().is_empty() {
+            return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래 사유(note)가 비어 있습니다.", source_row)));
         }
         let item = if let Some(item_id) = row.inventory_item_id {
             sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL")
