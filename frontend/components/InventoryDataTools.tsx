@@ -138,7 +138,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         const movementType = rawType === '입고' ? 'inbound' : rawType === '출고' ? 'outbound' : rawType === '조정' ? 'adjustment' : rawType;
         const rawQuantity = cellText(find(record, 'quantity', '수량', 'quantityDelta', '변동수량')).replaceAll(',', '').trim();
         const quantity = Number(rawQuantity);
-        if (movementType !== 'vision_estimate' && (!Number.isFinite(quantity) || (movementType !== 'initial' && quantity === 0))) {
+        if (movementType !== 'vision_estimate' && (!rawQuantity || !Number.isFinite(quantity))) {
           throw new Error(`${index + 2}행: 수량은 유효한 숫자여야 합니다.`);
         }
         return { id, name, barcode, movementType, quantity, record, index };
@@ -163,6 +163,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
 
       const payloadRows: Array<Record<string, unknown>> = [];
       let skippedEstimates = 0;
+      let skippedZeroRows = 0;
       for (const entry of entries) {
         if (entry.movementType === 'initial') continue;
         if (entry.movementType === 'vision_estimate') {
@@ -171,6 +172,10 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         }
         if (!['inbound', 'outbound', 'adjustment'].includes(entry.movementType)) {
           throw new Error(`${entry.index + 2}행: movementType은 initial, inbound, outbound, adjustment, vision_estimate 중 하나여야 합니다.`);
+        }
+        if (entry.quantity === 0) {
+          skippedZeroRows += 1;
+          continue;
         }
         if (entry.movementType !== 'adjustment' && entry.quantity < 0) {
           entry.quantity = Math.abs(entry.quantity);
@@ -212,6 +217,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       if (result.createdItems) parts.push(`신규 품목 ${result.createdItems}개를 안전재고 0으로 등록했습니다.`);
       if (result.rows) parts.push(`${result.rows}건의 거래를 승인 대기 상태로 등록했습니다.`);
       if (skippedEstimates) parts.push(`vision_estimate ${skippedEstimates}건은 재고에 반영하지 않았습니다.`);
+      if (skippedZeroRows) parts.push(`수량 0인 거래 ${skippedZeroRows}건은 변화가 없어 제외했습니다.`);
       setNotice(parts.join(' ') || '엑셀 데이터를 처리했습니다.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '엑셀 파일을 읽지 못했습니다.');
