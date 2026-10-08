@@ -720,8 +720,7 @@ async fn update_inventory(
     }
     let delta = if let Some(target) = input.current {
         target - existing.2
-    } else {
-        let quantity = input.quantity.ok_or_else(|| (StatusCode::BAD_REQUEST, "current or quantity is required".to_string()))?;
+    } else if let Some(quantity) = input.quantity {
         if quantity <= Decimal::ZERO { return Err((StatusCode::BAD_REQUEST, "quantity must be greater than zero".to_string())); }
         let entered_unit = input.quantity_unit.as_deref().unwrap_or(&existing.4);
         let multiplier = if entered_unit == existing.4 { Decimal::ONE }
@@ -729,6 +728,10 @@ async fn update_inventory(
             else { return Err((StatusCode::BAD_REQUEST, "quantityUnit must match the item's base or package unit".to_string())); };
         let converted = quantity * multiplier;
         if movement_type == "outbound" { -converted } else { converted }
+    } else if input.safe.is_some() {
+        Decimal::ZERO
+    } else {
+        return Err((StatusCode::BAD_REQUEST, "current, quantity, or safe is required".to_string()));
     };
     if (movement_type == "inbound" && delta < Decimal::ZERO) || (movement_type == "outbound" && delta >= Decimal::ZERO) {
         return Err((StatusCode::BAD_REQUEST, "movementType does not match the stock change".to_string()));

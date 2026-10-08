@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { AlertTriangle, Check, Download, FileSpreadsheet, RefreshCw, Upload, X } from 'lucide-react';
+import { AlertTriangle, Check, Download, FileSpreadsheet, Pencil, RefreshCw, Save, Upload, X } from 'lucide-react';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
 
 type InventoryChoice = { id: string; name: string; barcode?: string | null; unit: string; packageUnit: string | null; safe: number };
@@ -35,7 +35,10 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const loadedWarehouseIdRef = useRef<string | null>(null);
+  const [editingSafeItem, setEditingSafeItem] = useState<string | null>(null);
+  const [safeDraft, setSafeDraft] = useState('');
   const canReview = role === '관리자' || role === '서버 관리자';
+  const pendingBatches = batches.filter((batch) => batch.status === 'PENDING');
 
   const refresh = useCallback(async () => {
     const warehouse = encodeURIComponent(warehouseId);
@@ -277,6 +280,40 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
     }
   };
 
+  const saveSafeStock = async (item: InventoryChoice) => {
+    const safe = Number(safeDraft);
+    if (!safeDraft.trim() || !Number.isFinite(safe) || safe < 0) {
+      setNotice('안전재고는 0 이상의 숫자여야 합니다.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: item.id,
+          warehouseId,
+          current: undefined,
+          safe,
+          movementType: 'adjustment',
+          note: '안전재고 기준 설정',
+          source: 'manual',
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '안전재고를 저장하지 못했습니다.');
+      setEditingSafeItem(null);
+      setSafeDraft('');
+      setNotice(`'${item.name}' 안전재고를 ${safe.toLocaleString()} ${item.unit}로 저장했습니다.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '안전재고를 저장하지 못했습니다.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="space-y-5 border-y border-gray-200 dark:border-gray-800 py-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -297,15 +334,15 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
             <button disabled={!file || busy || !inventoryLoaded || !!inventoryLoadError} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '처리 중' : '승인 요청'}</button>
           </div>
           {inventoryLoadError ? <p role="alert" className="text-xs text-red-600">{inventoryLoadError}</p> : !inventoryLoaded ? <p role="status" className="text-xs text-textMuted">현재 창고 품목을 불러오는 중입니다.</p> : items.length === 0 ? <p role="status" className="text-xs text-amber-700">현재 창고에 등록된 품목이 없습니다.</p> : null}
-          {items.some((item) => item.safe <= 0) && <div role="alert" className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"><p className="flex items-center gap-2 font-bold"><AlertTriangle size={15} />안전재고 미설정 품목 {items.filter((item) => item.safe <= 0).length}개</p><p>안전재고가 0인 품목은 부족/과다 상태 판정이 정확하지 않습니다. 재고 화면에서 안전재고를 설정하세요.</p><ul className="list-inside list-disc">{items.filter((item) => item.safe <= 0).slice(0, 8).map((item) => <li key={item.id}>{item.name}</li>)}</ul></div>}
+          {items.some((item) => item.safe <= 0) && <div role="alert" className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"><p className="flex items-center gap-2 font-bold"><AlertTriangle size={15} />안전재고 미설정 품목 {items.filter((item) => item.safe <= 0).length}개</p><p>안전재고가 0인 품목은 부족/과다 상태 판정이 정확하지 않습니다. 아래에서 기준값을 설정하세요.</p><ul className="space-y-2">{items.filter((item) => item.safe <= 0).map((item) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-200 pt-2 dark:border-amber-900"><span>{item.name} · 현재 {item.safe} {item.unit}</span>{editingSafeItem === item.id ? <div className="flex items-center gap-1"><input aria-label={`${item.name} 안전재고`} type="number" min="0" step="0.000001" value={safeDraft} onChange={(event) => setSafeDraft(event.target.value)} className="w-28 rounded border border-amber-400 bg-white px-2 py-1 text-gray-900" /><button disabled={busy} onClick={() => void saveSafeStock(item)} title="안전재고 저장" className="p-1.5 text-emerald-800 hover:bg-emerald-100 rounded disabled:opacity-50"><Save size={15} /></button><button disabled={busy} onClick={() => { setEditingSafeItem(null); setSafeDraft(''); }} title="취소" className="p-1.5 hover:bg-amber-100 rounded"><X size={15} /></button></div> : <button onClick={() => { setEditingSafeItem(item.id); setSafeDraft(String(item.safe)); }} className="inline-flex items-center gap-1 rounded border border-amber-400 px-2 py-1 font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/50"><Pencil size={13} />설정</button>}</li>)}</ul></div>}
           <p className="text-xs leading-relaxed text-textMuted">신규 품목은 initial 행으로 시작 수량을 만듭니다. 안전재고는 0으로 등록되며 별도 경고에 표시됩니다. inbound/outbound/adjustment는 승인 대기 이력, vision_estimate는 미반영 처리됩니다.</p>
           {notice && <p role="status" className="text-xs text-primary">{notice}</p>}
           <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">
-            <h3 className="text-sm font-bold">가져오기 검토 {batches.filter((batch) => batch.status === 'PENDING').length}</h3>
-            {batches.length === 0 ? <p className="text-xs text-textMuted">가져온 배치가 없습니다.</p> : batches.map((batch) => (
+            <h3 className="text-sm font-bold">가져오기 검토 {pendingBatches.length}</h3>
+            {pendingBatches.length === 0 ? <p className="text-xs text-textMuted">검토 대기 중인 가져오기가 없습니다.</p> : pendingBatches.map((batch) => (
               <article key={batch.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 dark:border-gray-800 py-2 text-xs">
                 <div><strong>{batch.sourceName}</strong><span className="ml-2 text-textMuted">{batch.rowCount}건 · {batch.status} · {batch.submittedEmail}</span></div>
-                {batch.status === 'PENDING' && canReview && <div className="flex gap-1"><button disabled={busy} onClick={() => void reviewBatch(batch, true)} title="승인" className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded"><Check size={15} /></button><button disabled={busy} onClick={() => void reviewBatch(batch, false)} title="반려" className="p-1.5 text-red-700 hover:bg-red-50 rounded"><X size={15} /></button></div>}
+                {canReview && <div className="flex gap-1"><button disabled={busy} onClick={() => void reviewBatch(batch, true)} title="승인" className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded"><Check size={15} /></button><button disabled={busy} onClick={() => void reviewBatch(batch, false)} title="반려" className="p-1.5 text-red-700 hover:bg-red-50 rounded"><X size={15} /></button></div>}
                 {batch.reviewNote && <p className="basis-full text-textMuted">검토 메모: {batch.reviewNote}</p>}
               </article>
             ))}
