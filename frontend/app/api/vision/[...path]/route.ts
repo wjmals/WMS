@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getRustApiUrl } from '../../../../lib/rustApi';
 
 export const dynamic = 'force-dynamic';
 
-const RUST_API = process.env.RUST_API_URL || 'http://localhost:8080';
 type RouteContext = { params: Promise<{ path: string[] }> };
 
 async function proxy(request: NextRequest, context: RouteContext) {
   const { path } = await context.params;
   const source = new URL(request.url);
-  const target = `${RUST_API}/api/vision/${path.map(encodeURIComponent).join('/')}${source.search}`;
+  const target = `${getRustApiUrl()}/api/vision/${path.map(encodeURIComponent).join('/')}${source.search}`;
   const headers = new Headers();
   const authorization = request.headers.get('authorization');
   if (authorization) headers.set('Authorization', authorization);

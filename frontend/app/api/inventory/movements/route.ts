@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getRustApiUrl } from '../../../../lib/rustApi';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
-    const response = await fetch(`${process.env.RUST_API_URL || 'http://localhost:8080'}/api/inventory/movements${new URL(request.url).search}`, {
+    const response = await fetch(`${getRustApiUrl()}/api/inventory/movements${new URL(request.url).search}`, {
       headers: { ...(request.headers.get('authorization') ? { Authorization: request.headers.get('authorization')! } : {}) },
     });
     const text = await response.text();

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getRustApiUrl } from '../../../../lib/rustApi';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
   try {
-    const response = await fetch(`${process.env.RUST_API_URL || 'http://localhost:8080'}/api/vision/import`, {
+    const response = await fetch(`${getRustApiUrl()}/api/vision/import`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getRustApiUrl } from '../../../lib/rustApi';
 
 export const dynamic = 'force-dynamic';
 
-const RUST_API = process.env.RUST_API_URL || 'http://localhost:8080';
 
 // 지원 택배사 목록
 const CARRIERS: Record<string, { code: string; name: string }> = {
@@ -32,7 +32,7 @@ async function detectCarrierAuto(invoiceNo: string): Promise<{ code: string; nam
 
 async function proxy(req: NextRequest, method: string): Promise<NextResponse> {
   const url = new URL(req.url);
-  const targetUrl = `${RUST_API}${url.pathname}${url.search}`;
+  const targetUrl = `${getRustApiUrl()}${url.pathname}${url.search}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const authorization = req.headers.get('authorization');
   if (authorization) headers.Authorization = authorization;

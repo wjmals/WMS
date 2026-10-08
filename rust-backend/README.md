@@ -70,6 +70,7 @@ See `docs/API_명세서.md` for full request/response details.
 - `SUPER_ADMIN_PASSWORD`: required for the built-in server administrator login
 - `FRONTEND_ORIGINS`: comma-separated allowed browser origins
 - `GROQ_API_KEY`: required for `POST /api/monitor`; estimate results are queued for human review
+- `GROQ_VISION_MODEL`: model ID enabled for image input on the account; defaults to `qwen/qwen3.8-27b`
 - `SWEET_TRACKER_API_KEY`: required for successful external delivery tracking
 
 Do not put database credentials in the frontend or commit `.env` files.
@@ -82,3 +83,5 @@ cargo check
 ```
 
 Inventory and movement Decimal values use PostgreSQL `NUMERIC(20,6)`. The API serializes Rust Decimal values as JSON decimal strings to preserve precision; clients should parse designated quantity fields before arithmetic.
+
+`GET /api/inventory/forecast` exposes a 28-day moving-average outbound baseline and a 7-day rolling-origin MAPE backtest when at least 35 completed days exist. This is a transparent baseline, not a trained AI forecast. Stockout rate remains unavailable until unmet-demand events are recorded.

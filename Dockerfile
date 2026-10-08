@@ -1,8 +1,8 @@
 FROM rust:1.82-bookworm AS builder
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
-COPY schema.sql ./
-COPY src ./src
+COPY rust-backend/Cargo.toml rust-backend/Cargo.lock ./
+COPY rust-backend/schema.sql ./
+COPY rust-backend/src ./src
 RUN cargo build --release
 
 FROM debian:bookworm-slim

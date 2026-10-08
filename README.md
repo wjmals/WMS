@@ -13,7 +13,7 @@
 - 배송 등록, SweetTracker 실제 배송 조회 및 타임라인 저장, 완료 24시간 후 목록 제외
 - 창고별 비전 레퍼런스와 Groq Vision 모니터링. 분석 결과는 관리자 승인 전 재고에 반영되지 않음
 
-리포트와 AI 결과는 운영 성과나 예측 정확도가 검증된 것을 의미하지 않습니다. 미래 수요예측·권장 발주량은 입출고 이력과 검증 모델이 충분하지 않아 제공하지 않습니다.
+대시보드는 충분한 장부가 있는 품목에 한해 28일 이동평균 출고 기준선과 최근 7일 rolling MAPE 백테스트를 표시합니다. 2026-10-07 기준 운영 DB 장부가 비어 있어 현재 실측 MAPE/품절률은 없습니다. 기준선은 학습형 AI 수요예측이나 발주 권고가 아니며, 미충족 주문을 기록하지 않아 품절률 KPI는 산출할 수 없습니다. 실제 장부가 부족하면 수치를 숨기고 `insufficient_data`로 표시합니다.
 
 ### 화면
 
@@ -72,6 +72,25 @@ Browser -> Next.js frontend -> Rust Axum API -> PostgreSQL
 
 5. 브라우저에서 `http://localhost:3000`을 엽니다.
 
+## Vercel 배포
+
+Vercel 프로젝트는 Next.js 프런트엔드만 빌드합니다. Rust API와 PostgreSQL은 Vercel 함수 안에서 실행되지 않으므로, 별도 컨테이너 호스팅 서비스와 관리형 PostgreSQL에 배포하고 공개 HTTPS 주소를 준비해야 합니다.
+
+Vercel 프로젝트의 **Settings → Environment Variables**에서 Production(필요하면 Preview에도)에 다음을 설정한 뒤 재배포합니다.
+
+- `RUST_API_URL`: Rust API의 공개 HTTPS origin만 입력합니다. 예: `https://wms-api.example.com` (끝에 `/api`를 붙이지 않음)
+
+Rust API 호스팅 환경에는 다음을 설정합니다.
+
+- `DATABASE_URL`: 관리형 PostgreSQL 접속 URL. `localhost`나 로컬 Docker 주소는 사용할 수 없습니다.
+- `JWT_SECRET`: 재시작 후에도 유지되는 안전한 무작위 비밀값
+- `SUPER_ADMIN_PASSWORD`: 서버 관리자 비밀번호
+- `FRONTEND_ORIGINS`: 배포한 프런트엔드 origin. 예: `https://wms.example.com`
+- `GROQ_API_KEY`, `GROQ_VISION_MODEL`: 이미지 분석을 사용하는 경우 설정하며, 선택 모델은 계정에서 이미지 입력이 허용되어야 합니다.
+- `SWEET_TRACKER_API_KEY`: 실제 배송 조회를 사용하는 경우 설정합니다.
+
+배포 후 `https://<rust-api-origin>/health`가 `{"status":"ok","database":"configured"}`를 반환하는지 확인한 다음, 배포 프런트엔드에서 회원가입을 시험합니다. 프로덕션에서 `RUST_API_URL`이 누락되면 프록시는 `localhost:8080`으로 잘못 요청하지 않고 필요한 환경변수 이름을 `503` 오류로 안내합니다.
+
 ### 검증
 
 ```bash
@@ -89,9 +108,10 @@ npm --prefix frontend audit
 - `SUPER_ADMIN_PASSWORD`: 서버 관리자 로그인의 비밀번호. 설정하지 않으면 서버 관리자 로그인이 거부됩니다.
 - `FRONTEND_ORIGINS`: Rust API가 허용할 프런트엔드 origin 목록. 쉼표로 여러 origin을 지정할 수 있습니다.
 - `GROQ_API_KEY`: `/api/monitor` 이미지 분석에 필요하며, 계정이 호출 모델을 사용할 수 있어야 합니다.
+- `GROQ_VISION_MODEL`: 비전 모델 ID. 기본값은 `qwen/qwen3.8-27b`이며 해당 계정에서 이미지 입력 권한이 있어야 합니다.
 - `SWEET_TRACKER_API_KEY`: 배송 화면의 실시간 택배사 조회에 필요하며 Rust API의 비밀 설정에 둡니다. 이용권이나 키가 없으면 조회는 오류로 표시됩니다.
 
-Groq Vision과 SweetTracker 성공 호출에는 각 제공자의 유효 키·계정 권한이 필요합니다. 미설정·제공자 오류는 성공으로 가장하지 않고 오류 응답을 반환합니다. 카메라와 라벨은 실제 브라우저·기기·프린터에서 별도 현장 확인이 필요합니다.
+Groq Vision은 2026-10-07에 설정된 계정 모델을 합성 이미지로 API 경유 확인했습니다. SweetTracker 키는 현재 미설정입니다. 외부 제공자 오류는 성공으로 가장하지 않고 오류 응답을 반환합니다. 카메라와 라벨은 실제 브라우저·기기·프린터에서 별도 현장 확인이 필요합니다.
 
 Rust 로컬 비밀은 Git에서 제외되는 `rust-backend/.env.local`에 둘 수 있습니다. 이 파일은 `.env`보다 먼저 읽히며 저장소에 올리지 마십시오. 템플릿은 `rust-backend/.env.example`을 참고하십시오.
 

@@ -47,6 +47,31 @@ type MovementDay = {
   movementCount: number;
 };
 
+type ForecastItem = {
+  itemId: string;
+  itemName: string;
+  unit: string;
+  historyDays: number;
+  status: string;
+  forecastOutflow7d: number | null;
+  mapePct: number | null;
+  accuracyPct: number | null;
+  mapeSampleDays: number;
+};
+
+type ForecastData = {
+  model: string;
+  status: string;
+  minimumHistoryDays: number;
+  mapePct: number | null;
+  accuracyPct: number | null;
+  targetAccuracyPct: number;
+  targetMet: boolean;
+  stockoutRatePct: number | null;
+  stockoutMetricReason: string;
+  items: ForecastItem[];
+};
+
 function getOutboundTrend(rows: MovementDay[]) {
   const active = rows.filter((row) => row.movementCount > 0);
   if (active.length < 2) return '실제 변동 데이터가 2일 이상 쌓이면 출고 추세를 계산합니다.';
@@ -71,6 +96,7 @@ export default function InventoryDashboard() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [zones, setZones] = useState<ZoneData[]>([]);
   const [movementDays, setMovementDays] = useState<MovementDay[]>([]);
+  const [forecastData, setForecastData] = useState<ForecastData | null>(null);
   const [loading, setLoading] = useState(true);
 
   // 구역 설정 모달 상태
@@ -106,18 +132,21 @@ export default function InventoryDashboard() {
     if (!user) return;
     const warehouseId = encodeURIComponent(user.warehouseId || 'wh_wjmals');
     try {
-      const [invRes, zoneRes, movementRes] = await Promise.all([
+      const [invRes, zoneRes, movementRes, forecastRes] = await Promise.all([
         fetch(`/api/inventory?warehouseId=${warehouseId}`),
         fetch(`/api/zones?warehouseId=${warehouseId}`),
-        fetch(`/api/inventory/movements?warehouseId=${warehouseId}&days=30`)
+        fetch(`/api/inventory/movements?warehouseId=${warehouseId}&days=30`),
+        fetch(`/api/inventory/forecast?warehouseId=${warehouseId}&historyDays=90`)
       ]);
       const invData = await invRes.json();
       const zoneData = await zoneRes.json();
       const movementData = await movementRes.json();
+      const forecastResult = await forecastRes.json();
 
       if (Array.isArray(invData)) setItems(normalizeApiNumbers(invData));
       if (Array.isArray(zoneData)) setZones(normalizeApiNumbers(zoneData));
       if (Array.isArray(movementData)) setMovementDays(normalizeApiNumbers(movementData));
+      if (forecastRes.ok && forecastResult && Array.isArray(forecastResult.items)) setForecastData(normalizeApiNumbers(forecastResult));
     } catch (e) {
       console.error(e);
     } finally {
@@ -753,6 +782,40 @@ export default function InventoryDashboard() {
             아직 입출고 변동 기록이 없습니다. 바코드 화면에서 첫 입고 또는 출고를 기록하면 실제 이력이 여기에 표시됩니다.
           </div>
         )}
+      </section>
+
+      <section className="border-y border-gray-200 dark:border-gray-800 py-6 space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase text-primary">Demand baseline · not an AI forecast</p>
+            <h2 className="text-xl font-bold text-textMain dark:text-white">7일 출고 기준선 · 28일 이동평균</h2>
+            <p className="mt-1 text-xs text-textMuted">실제 outbound 장부만 사용합니다. 최근 7일 rolling backtest MAPE이며, 실제 품절률과 예측 성능 보증을 뜻하지 않습니다.</p>
+          </div>
+          <span className={`rounded-lg px-3 py-2 text-xs font-bold ${forecastData?.status === 'measured' ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
+            {forecastData?.status === 'measured' ? '백테스트 가능' : '실측 데이터 부족'}
+          </span>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
+            <p className="text-xs text-textMuted">백테스트 MAPE / 정확도 기준</p>
+            <p className="mt-2 text-lg font-bold">{forecastData?.mapePct == null ? '측정 불가' : `${forecastData.mapePct.toFixed(1)}% MAPE`}</p>
+            <p className="text-xs text-textMuted">목표 정확도 {forecastData?.targetAccuracyPct ?? 92}% {forecastData?.status === 'measured' ? (forecastData.targetMet ? '달성' : '미달성') : '평가 대기'}</p>
+          </div>
+          <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
+            <p className="text-xs text-textMuted">품절률 KPI</p>
+            <p className="mt-2 text-lg font-bold">산출 불가</p>
+            <p className="text-xs text-textMuted">{forecastData?.stockoutMetricReason || '미충족 수요 기록이 없습니다.'}</p>
+          </div>
+          <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
+            <p className="text-xs text-textMuted">품목별 7일 기준 출고량</p>
+            {forecastData?.items.length ? (
+              <ul className="mt-2 space-y-1 text-xs">
+                {forecastData.items.slice(0, 4).map((forecast) => <li key={forecast.itemId} className="flex justify-between gap-2"><span className="truncate">{forecast.itemName}</span><span className="shrink-0 font-mono">{forecast.forecastOutflow7d == null ? `기록 ${forecast.historyDays}일` : `${forecast.forecastOutflow7d.toLocaleString()} ${forecast.unit}`}</span></li>)}
+              </ul>
+            ) : <p className="mt-2 text-xs text-textMuted">활성 품목 또는 장부가 없습니다.</p>}
+          </div>
+        </div>
+        <p className="text-[11px] text-textMuted">모델: {forecastData?.model || '28-day moving-average baseline'} · 품절률은 주문 미충족/품절 시도를 기록하지 않아 계산하지 않습니다. 데이터가 부족한 품목은 예측값을 표시하지 않습니다.</p>
       </section>
 
       {/* 1. 수기 재고 품목 추가 모달 (창고 관리자 전용) */}

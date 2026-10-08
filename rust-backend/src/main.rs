@@ -209,6 +209,13 @@ struct MovementQuery {
 }
 
 #[derive(Deserialize)]
+struct ForecastQuery {
+    #[serde(alias = "warehouseId")]
+    warehouse_id: Option<String>,
+    history_days: Option<i32>,
+}
+
+#[derive(Deserialize)]
 struct HistoricalMovementImport {
     #[serde(alias = "warehouseId")]
     warehouse_id: String,
@@ -415,6 +422,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     if let Some(pool) = &db {
+        let schema_sql = include_str!("../schema.sql");
+        sqlx::raw_sql(schema_sql).execute(pool).await?;
         sqlx::query("ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS barcode TEXT")
             .execute(pool).await?;
         sqlx::query("ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT '톤', ADD COLUMN IF NOT EXISTS package_unit TEXT, ADD COLUMN IF NOT EXISTS package_size NUMERIC(20,6) NOT NULL DEFAULT 1, ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
@@ -474,6 +483,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(health))
         .route("/api/inventory", get(list_inventory).post(create_inventory).patch(update_inventory).delete(delete_inventory))
         .route("/api/inventory/movements", get(list_inventory_movements))
+        .route("/api/inventory/forecast", get(list_inventory_forecast))
         .route("/api/inventory/ledger", get(list_inventory_ledger))
         .route("/api/inventory/import", axum::routing::post(submit_movement_import))
         .route("/api/inventory/imports", get(list_movement_imports))
@@ -902,6 +912,105 @@ async fn list_inventory_movements(
     Ok(Json(rows))
 }
 
+async fn list_inventory_forecast(
+    State(state): State<AppState>,
+    Query(query): Query<ForecastQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    const TRAINING_DAYS: usize = 28;
+    const HOLDOUT_DAYS: usize = 7;
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let warehouse_id = query.warehouse_id.unwrap_or_else(|| "wh_wjmals".to_string());
+    let history_days = query.history_days.unwrap_or(90).clamp(35, 365);
+    let rows = sqlx::query_as::<_, (Uuid, String, String, Decimal, chrono::NaiveDate, Decimal)>(
+        "WITH item_coverage AS (
+            SELECT i.id, i.name, i.unit, i.safe,
+                   GREATEST(i.created_at::date, COALESCE(MIN(m.created_at)::date, i.created_at::date)) AS coverage_start
+              FROM inventory_items i
+              LEFT JOIN inventory_movements m ON m.inventory_item_id = i.id
+             WHERE i.warehouse_id = $1 AND i.archived_at IS NULL
+             GROUP BY i.id
+         )
+         SELECT c.id, c.name, c.unit, c.safe, calendar.day::date AS day,
+                COALESCE(SUM(CASE WHEN m.movement_type = 'outbound' THEN -m.quantity_delta ELSE 0 END), 0)::numeric AS outbound
+           FROM item_coverage c
+           CROSS JOIN LATERAL generate_series(
+               GREATEST(c.coverage_start, current_date - ($2::int - 1)),
+               current_date - interval '1 day',
+               interval '1 day'
+           ) AS calendar(day)
+           LEFT JOIN inventory_movements m ON m.inventory_item_id = c.id
+                AND m.created_at >= calendar.day
+                AND m.created_at < calendar.day + interval '1 day'
+          GROUP BY c.id, c.name, c.unit, c.safe, calendar.day
+          ORDER BY c.name, calendar.day",
+    ).bind(&warehouse_id).bind(history_days).fetch_all(&db).await.map_err(internal_error)?;
+
+    let mut grouped: std::collections::BTreeMap<Uuid, (String, String, Decimal, Vec<Decimal>)> = std::collections::BTreeMap::new();
+    for row in rows {
+        grouped.entry(row.0).or_insert_with(|| (row.1, row.2, row.3, Vec::new())).3.push(row.5);
+    }
+    let mut aggregate_percentage_error = Decimal::ZERO;
+    let mut aggregate_samples = 0_usize;
+    let mut eligible_items = 0_usize;
+    let items = grouped.into_iter().map(|(id, (name, unit, safe, daily_outbound))| {
+        let history_count = daily_outbound.len();
+        let Some((forecast_total, mape, sample_days)) = evaluate_moving_average(&daily_outbound, TRAINING_DAYS, HOLDOUT_DAYS) else {
+            return serde_json::json!({
+                "itemId": id,
+                "itemName": name,
+                "unit": unit,
+                "safe": safe,
+                "historyDays": history_count,
+                "status": "insufficient_data",
+                "requiredDays": TRAINING_DAYS + HOLDOUT_DAYS,
+                "forecastOutflow7d": Value::Null,
+                "mapePct": Value::Null,
+                "accuracyPct": Value::Null,
+                "mapeSampleDays": 0
+            });
+        };
+        if let Some(item_mape) = mape {
+            eligible_items += 1;
+            aggregate_percentage_error += item_mape * Decimal::from(sample_days as u64);
+            aggregate_samples += sample_days;
+        }
+        serde_json::json!({
+            "itemId": id,
+            "itemName": name,
+            "unit": unit,
+            "safe": safe,
+            "historyDays": history_count,
+            "status": if mape.is_some() { "backtest_available" } else { "no_nonzero_backtest_days" },
+            "forecastOutflow7d": forecast_total,
+            "mapePct": mape,
+            "accuracyPct": mape.map(|value| (Decimal::from(100u32) - value).max(Decimal::ZERO)),
+            "mapeSampleDays": sample_days
+        })
+    }).collect::<Vec<_>>();
+
+    let overall_mape = if aggregate_samples == 0 { None } else {
+        Some(aggregate_percentage_error / Decimal::from(aggregate_samples as u64))
+    };
+    let sufficient = overall_mape.is_some();
+    Ok(Json(serde_json::json!({
+        "model": "28-day moving-average baseline",
+        "forecastHorizonDays": HOLDOUT_DAYS,
+        "backtestHorizonDays": HOLDOUT_DAYS,
+        "minimumHistoryDays": TRAINING_DAYS + HOLDOUT_DAYS,
+        "historyDaysRequested": history_days,
+        "status": if sufficient { "measured" } else { "insufficient_data" },
+        "itemsWithEvaluableMape": eligible_items,
+        "mapePct": overall_mape,
+        "accuracyPct": overall_mape.map(|value| (Decimal::from(100u32) - value).max(Decimal::ZERO)),
+        "targetAccuracyPct": 92,
+        "targetMet": overall_mape.is_some_and(|value| Decimal::from(100u32) - value >= Decimal::from(92u32)),
+        "stockoutRatePct": Value::Null,
+        "stockoutMetricStatus": "not_measurable",
+        "stockoutMetricReason": "unmet demand and stockout attempts are not recorded; outbound ledger alone cannot measure the stockout rate",
+        "items": items
+    })))
+}
+
 fn classify_stock(current: Decimal, safe: Decimal, unit: &str) -> (&'static str, &'static str, String, &'static str) {
     let diff = current - safe;
     if current < safe * Decimal::new(5, 1) {
@@ -923,6 +1032,33 @@ fn classify_stock(current: Decimal, safe: Decimal, unit: &str) -> (&'static str,
     }
 }
 
+fn evaluate_moving_average(values: &[Decimal], window: usize, horizon: usize) -> Option<(Decimal, Option<Decimal>, usize)> {
+    if window == 0 || horizon == 0 || values.len() < window + horizon {
+        return None;
+    }
+    let test_start = values.len() - horizon;
+    let mut percentage_error_sum = Decimal::ZERO;
+    let mut observed_days = 0_usize;
+    for index in test_start..values.len() {
+        let training_start = index.saturating_sub(window);
+        let training = &values[training_start..index];
+        if training.len() != window { return None; }
+        let predicted = training.iter().copied().sum::<Decimal>() / Decimal::from(window as u64);
+        let actual = values[index];
+        if actual > Decimal::ZERO {
+            percentage_error_sum += (predicted - actual).abs() / actual;
+            observed_days += 1;
+        }
+    }
+    let recent = &values[values.len() - window..];
+    let daily_baseline = recent.iter().copied().sum::<Decimal>() / Decimal::from(window as u64);
+    let horizon_total = daily_baseline * Decimal::from(horizon as u64);
+    let mape = if observed_days == 0 { None } else {
+        Some(percentage_error_sum * Decimal::from(100u32) / Decimal::from(observed_days as u64))
+    };
+    Some((horizon_total, mape, observed_days))
+}
+
 fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, bool), ()> {
     match current {
         "AT_PICKUP" => Ok(("IN_TRANSIT", "허브터미널 이동중", false)),
@@ -934,7 +1070,7 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_zone_occupancy, classify_stock, next_delivery_state, sweet_tracker_status};
+    use super::{calculate_zone_occupancy, classify_stock, evaluate_moving_average, next_delivery_state, sweet_tracker_status};
     use rust_decimal::Decimal;
 
     #[test]
@@ -969,6 +1105,29 @@ mod tests {
         assert_eq!(state, "normal");
         assert_eq!(calculate_zone_occupancy(Decimal::from(120), Decimal::from(100)), (0.0, "warning", "용량 초과"));
         assert_eq!(calculate_zone_occupancy(Decimal::from(3), Decimal::ZERO), (0.0, "warning", "용량 초과"));
+    }
+
+    #[test]
+    fn moving_average_backtest_requires_history_and_measures_nonzero_days() {
+        let mut values = vec![Decimal::from(10); 28];
+        values.extend(vec![Decimal::from(10); 7]);
+        let (next_week, mape, sample_days) = evaluate_moving_average(&values, 28, 7).unwrap();
+        assert_eq!(next_week, Decimal::from(70));
+        assert_eq!(mape, Some(Decimal::ZERO));
+        assert_eq!(sample_days, 7);
+        assert!(evaluate_moving_average(&values[..34], 28, 7).is_none());
+
+        let mut changing = vec![Decimal::from(10); 28];
+        changing.extend(vec![Decimal::from(20); 7]);
+        let (_, changing_mape, changing_samples) = evaluate_moving_average(&changing, 28, 7).unwrap();
+        assert!(changing_mape.is_some_and(|value| value > Decimal::ZERO && value < Decimal::from(100u32)));
+        assert_eq!(changing_samples, 7);
+
+        let zero_history = vec![Decimal::ZERO; 35];
+        let (forecast, no_mape, no_samples) = evaluate_moving_average(&zero_history, 28, 7).unwrap();
+        assert_eq!(forecast, Decimal::ZERO);
+        assert_eq!(no_mape, None);
+        assert_eq!(no_samples, 0);
     }
 }
 
@@ -1569,6 +1728,7 @@ async fn analyze_monitor_image(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
     let api_key = env::var("GROQ_API_KEY").map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "GROQ_API_KEY is not configured".to_string()))?;
+    let vision_model = env::var("GROQ_VISION_MODEL").unwrap_or_else(|_| "qwen/qwen3.8-27b".to_string());
     let warehouse_id = if user.role == "서버 관리자" { input.warehouse_id.unwrap_or_else(|| "wh_wjmals".to_string()) }
         else { user.warehouse_id.clone().ok_or_else(|| (StatusCode::FORBIDDEN, "계정에 배정된 창고가 없습니다.".to_string()))? };
     let image_url = if input.image.starts_with("data:") { input.image.clone() } else { format!("data:image/jpeg;base64,{}", input.image) };
@@ -1601,7 +1761,15 @@ async fn analyze_monitor_image(
         .await
         .map_err(internal_error)?
     };
-    let prompt = format!("당신은 창고 재고 관리 AI입니다. 현재 이미지의 품목과 재고 상태를 분석하고 JSON만 반환하세요. 아래 레퍼런스 이미지가 있으면 현재 이미지와 비교하여 품목을 식별하세요. 레퍼런스는 학습 데이터가 아니라 이번 분석을 위한 참고 자료입니다. 우선 품목: {}. 필드: itemName, estimatedQuantity, unit, status(shortage|safe|overstock), statusLabel, confidence(0-100), recommendation, reason.", input.item_name.as_deref().unwrap_or("없음"));
+    let expected_unit = if let Some(item_name) = input.item_name.as_deref() {
+        sqlx::query_as::<_, (String, Option<String>)>("SELECT unit,package_unit FROM inventory_items WHERE warehouse_id=$1 AND lower(name)=lower($2) AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1")
+            .bind(&warehouse_id).bind(item_name).fetch_optional(&db).await.map_err(internal_error)?
+    } else { None };
+    let unit_instruction = expected_unit.as_ref().map(|(unit, package_unit)| format!(
+        "기존 재고 품목 단위 제약: 기준 단위는 '{}', 등록된 포장 단위는 '{}'. 이미지에서 수량을 판독할 수 있더라도 unit 필드에는 이 둘 중 하나만 반환하세요. 해당 단위로 신뢰성 있게 환산할 수 없으면 추정 수량을 억지로 만들지 말고 낮은 confidence와 사유를 반환하세요.",
+        unit, package_unit.as_deref().unwrap_or("없음")
+    )).unwrap_or_else(|| "단위는 이미지에서 확인 가능한 명확한 단위를 사용하세요.".to_string());
+    let prompt = format!("당신은 창고 재고 관리 AI입니다. 현재 이미지는 실물 재고 참고 이미지이며, 식별 가능한 사실만 분석하고 JSON만 반환하세요. 아래 레퍼런스 이미지는 이번 분석의 참고 자료일 뿐 학습이나 실측 보증이 아닙니다. 우선 품목: {}. {} 반환 필드: itemName, estimatedQuantity (0 이상 숫자), unit, status(shortage|safe|overstock), statusLabel, confidence(0-100 정수), recommendation, reason. 수량을 확신할 수 없으면 confidence를 낮추고 추정 한계를 reason에 밝히세요.", input.item_name.as_deref().unwrap_or("없음"), unit_instruction);
     let mut content = vec![serde_json::json!({ "type": "text", "text": prompt })];
     for (name, description, thumbnail) in references {
         if thumbnail.trim().is_empty() {
@@ -1625,7 +1793,7 @@ async fn analyze_monitor_image(
         "image_url": { "url": image_url },
     }));
     let payload = serde_json::json!({
-        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "model": vision_model,
         "messages": [{ "role": "user", "content": content }],
         "max_tokens": 512,
         "temperature": 0.1
@@ -1634,7 +1802,9 @@ async fn analyze_monitor_image(
         .bearer_auth(api_key).json(&payload).send().await
         .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
     if !response.status().is_success() {
-        return Err((StatusCode::BAD_GATEWAY, format!("Groq API returned {}", response.status())));
+        let status = response.status();
+        let details = response.text().await.unwrap_or_default();
+        return Err((StatusCode::BAD_GATEWAY, format!("Groq model '{}' returned {}: {}", vision_model, status, details.chars().take(300).collect::<String>())));
     }
     let body: Value = response.json().await.map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
     let content = body["choices"][0]["message"]["content"].as_str().unwrap_or("");

@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: wms-rust-api
+    runtime: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: singapore
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: DATABASE_URL
+        fromDatabase:
+          name: wms-postgres-db
+          property: connectionString
+      - key: JWT_SECRET
+        value: 697ce25ee328fcc7dd9dce509bd37577ac76db587ea7666a6e13bed1dd8d6ddd
+      - key: SUPER_ADMIN_PASSWORD
+        value: v+4zL+YVGj3Wt0EqDn+kRX3TyOIBuI5jjRs9+ALg
+      - key: FRONTEND_ORIGINS
+        value: https://wms-lyart-psi.vercel.app
+
+databases:
+  - name: wms-postgres-db
+    plan: free
+    region: singapore
+    databaseName: wms
+    user: wms

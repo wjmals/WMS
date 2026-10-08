@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { backendUnavailableResponse, getRustApiUrl } from '../../../lib/rustApi';
 
 export const dynamic = 'force-dynamic';
 
-// Rust 백엔드 URL - 환경변수로 설정 (없으면 localhost:8080)
-const RUST_API = process.env.RUST_API_URL || 'http://localhost:8080';
-
 async function proxyToRust(req: NextRequest, method: string, url: URL): Promise<NextResponse> {
-  const targetUrl = `${RUST_API}${url.pathname}${url.search}`;
+  const targetUrl = `${getRustApiUrl()}${url.pathname}${url.search}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const authorization = req.headers.get('authorization');
   if (authorization) headers.Authorization = authorization;
@@ -52,7 +50,7 @@ export async function GET(req: NextRequest) {
     return await proxyToRust(req, 'GET', new URL(req.url));
   } catch (err) {
     console.error('[proxy] GET /api/users error:', err);
-    return NextResponse.json({ error: '백엔드 서버에 연결할 수 없습니다.' }, { status: 503 });
+    return backendUnavailableResponse(err);
   }
 }
 
@@ -61,7 +59,7 @@ export async function POST(req: NextRequest) {
     return await proxyToRust(req, 'POST', new URL(req.url));
   } catch (err) {
     console.error('[proxy] POST /api/users error:', err);
-    return NextResponse.json({ error: '백엔드 서버에 연결할 수 없습니다.' }, { status: 503 });
+    return backendUnavailableResponse(err);
   }
 }
 
@@ -70,6 +68,6 @@ export async function DELETE(req: NextRequest) {
     return await proxyToRust(req, 'DELETE', new URL(req.url));
   } catch (err) {
     console.error('[proxy] DELETE /api/users error:', err);
-    return NextResponse.json({ error: '백엔드 서버에 연결할 수 없습니다.' }, { status: 503 });
+    return backendUnavailableResponse(err);
   }
 }

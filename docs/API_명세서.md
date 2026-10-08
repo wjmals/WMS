@@ -246,6 +246,12 @@ Rust API의 성공 응답에는 `token`이 포함된다. Next.js 브라우저 �
 
 재고 생성은 `initial` 잔액으로, `PATCH /api/inventory`는 `movementType`(`inbound`, `outbound`, `adjustment`)와 `note`로 변동을 기록한다. 재고 변경과 변동 로그는 같은 DB 트랜잭션에 저장된다.
 
+### `GET /api/inventory/forecast?warehouseId=<id>&historyDays=90`
+
+투명한 기준선 모델로 품목별 다음 7일 출고량을 계산하고, 마지막 7일을 하루씩 앞당기는 rolling-origin 백테스트 MAPE를 반환한다. 모델은 직전 28개 완료 일자의 평균 출고량을 다음 날 예측값으로 사용한다. 오늘 진행 중인 날짜는 학습과 평가에서 제외한다. 최소 28일 학습 + 7일 검증 이력이 없는 품목에는 `insufficient_data`, `forecastOutflow7d: null`, `mapePct: null`을 반환한다. 실제 출고가 0인 검증일은 MAPE 표본에서 제외하며, 비영 출고 검증일이 없으면 MAPE는 측정 불가다.
+
+응답의 전체 `mapePct`는 품목별 비영 출고 검증일 수로 가중한 값이다. `accuracyPct`는 UI 참고용 `max(0, 100 - MAPE)` 변환치이며 정확도 보증이 아니다. `targetMet`은 92% 기준을 참고로 평가한다. 품절률은 재고가 없어 미충족된 주문/수요가 DB에 기록되지 않으므로 항상 `null`이며 `stockoutMetricStatus`는 `not_measurable`이다. 출고량 기준선은 실제 수요 예측이나 발주 권고를 뜻하지 않는다.
+
 ### `GET /api/inventory/ledger?warehouseId=<id>&days=90`
 
 감사 확인용 원시 장부를 최근 순으로 반환한다. 행에는 품목, 변동 유형, 소수 증감량, 변경 후 잔량, 담당자, 출처, 사유, 발생 시각이 포함된다. `days`는 조회 한도를 정하는 1~365일 값이다.
@@ -407,7 +413,7 @@ Rust DTO는 snake_case 필드명을 사용한다. Next 라우트는 요청 본�
 }
 ```
 
-`GROQ_API_KEY`가 필요하다. 서버는 해당 창고의 `item_references`에서 레퍼런스 이미지를 최대 3개까지 불러오고(`itemName`이 정확히 일치하는 레퍼런스를 우선 사용), 현재 카메라 이미지와 함께 Groq 비전 모델로 전송한 뒤 모니터 로그와 `PENDING` 추정 레코드를 저장한다. 추정 결과만으로 현재 재고를 갱신하지 않으며, 관리자 승인 후에만 장부에 반영한다. 이는 요청 시점의 레퍼런스 기반 추론이며 모델 파인튜닝이 아니다.
+`GROQ_API_KEY`가 필요하다. `GROQ_VISION_MODEL`은 이미지 입력이 가능한 계정 모델 ID이며 기본값은 `qwen/qwen3.8-27b`다. 서버는 해당 창고의 `item_references`에서 레퍼런스 이미지를 최대 3개까지 불러오고(`itemName`이 정확히 일치하는 레퍼런스를 우선 사용), 현재 카메라 이미지와 함께 Groq 비전 모델로 전송한 뒤 모니터 로그와 `PENDING` 추정 레코드를 저장한다. 일치 품목이 있을 경우 기준/포장 단위를 프롬프트에 제공한다. 추정 결과만으로 현재 재고를 갱신하지 않으며, 관리자 승인 후에만 장부에 반영한다. 이는 요청 시점의 레퍼런스 기반 추론이며 모델 파인튜닝이 아니다.
 
 실패 동작: `GROQ_API_KEY` 미설정 시 `503`, 외부 제공자 오류나 파싱 실패 시 `502`를 반환한다.
 

@@ -12,6 +12,9 @@ const decimalFields = new Set([
   'estimated_quantity',
   'quantityDelta',
   'balanceAfter',
+  'forecastOutflow7d',
+  'mapePct',
+  'accuracyPct',
 ]);
 
 export function normalizeApiNumbers<T>(value: T): T {
