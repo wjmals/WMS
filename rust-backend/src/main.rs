@@ -1070,7 +1070,7 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_zone_occupancy, classify_stock, evaluate_moving_average, next_delivery_state, sweet_tracker_status};
+    use super::{calculate_zone_occupancy, classify_stock, delivery_warehouse_scope, evaluate_moving_average, next_delivery_state, sweet_tracker_status, AuthenticatedUser};
     use rust_decimal::Decimal;
 
     #[test]
@@ -1087,6 +1087,31 @@ mod tests {
         assert_eq!(next_delivery_state("IN_TRANSIT").unwrap().0, "OUT_FOR_DELIVERY");
         assert_eq!(next_delivery_state("OUT_FOR_DELIVERY").unwrap().0, "DELIVERED");
         assert!(next_delivery_state("DELIVERED").is_err());
+    }
+
+    #[test]
+    fn delivery_scope_never_treats_unassigned_users_as_global() {
+        let manager_without_warehouse = AuthenticatedUser {
+            id: "manager-1".to_string(),
+            email: "manager@example.test".to_string(),
+            role: "관리자".to_string(),
+            status: "APPROVED".to_string(),
+            warehouse_id: None,
+        };
+        assert!(delivery_warehouse_scope(&manager_without_warehouse).is_err());
+
+        let worker = AuthenticatedUser {
+            warehouse_id: Some("wh_alpha".to_string()),
+            ..manager_without_warehouse.clone()
+        };
+        assert_eq!(delivery_warehouse_scope(&worker).unwrap().as_deref(), Some("wh_alpha"));
+
+        let server_admin = AuthenticatedUser {
+            role: "서버 관리자".to_string(),
+            warehouse_id: Some("wh_alpha".to_string()),
+            ..manager_without_warehouse
+        };
+        assert_eq!(delivery_warehouse_scope(&server_admin).unwrap(), None);
     }
 
     #[test]
@@ -1567,11 +1592,21 @@ async fn list_delivery(
     axum::Extension(user): axum::Extension<AuthenticatedUser>,
 ) -> Result<Json<Vec<DeliveryRecord>>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
+    let warehouse_scope = delivery_warehouse_scope(&user)?;
     let rows = sqlx::query_as::<_, DeliveryRecord>(
         "SELECT id, warehouse_id, invoice_no, carrier_code, carrier_name, item_name, sender_name, receiver_name, status, status_code, current_location, delivered_at, tracking_details, created_at, updated_at
          FROM delivery_tracking WHERE ($1::text IS NULL OR warehouse_id = $1) AND (delivered_at IS NULL OR delivered_at > now() - interval '24 hours') ORDER BY created_at DESC",
-    ).bind(if user.role == "서버 관리자" { None } else { user.warehouse_id }).fetch_all(&db).await.map_err(internal_error)?;
+    ).bind(warehouse_scope).fetch_all(&db).await.map_err(internal_error)?;
     Ok(Json(rows))
+}
+
+fn delivery_warehouse_scope(user: &AuthenticatedUser) -> Result<Option<String>, (StatusCode, String)> {
+    if user.role == "서버 관리자" {
+        Ok(None)
+    } else {
+        user.warehouse_id.clone().map(Some)
+            .ok_or_else(|| (StatusCode::FORBIDDEN, "계정에 배정된 창고가 없습니다.".to_string()))
+    }
 }
 
 async fn create_delivery(
@@ -1605,8 +1640,9 @@ async fn delete_delivery(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
     let id = query.id.ok_or_else(|| (StatusCode::BAD_REQUEST, "id가 필요합니다.".to_string()))?;
+    let warehouse_scope = delivery_warehouse_scope(&user)?;
     let result = sqlx::query("DELETE FROM delivery_tracking WHERE id = $1 AND ($2::text IS NULL OR warehouse_id = $2)")
-        .bind(id).bind(if user.role == "서버 관리자" { None } else { user.warehouse_id }).execute(&db).await.map_err(internal_error)?;
+        .bind(id).bind(warehouse_scope).execute(&db).await.map_err(internal_error)?;
     if result.rows_affected() == 0 { return Err((StatusCode::NOT_FOUND, "배송 항목을 찾을 수 없습니다.".to_string())); }
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -1618,7 +1654,7 @@ async fn advance_delivery(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
     let id = query.id.ok_or_else(|| (StatusCode::BAD_REQUEST, "id가 필요합니다.".to_string()))?;
-    let warehouse_id = if user.role == "서버 관리자" { None } else { user.warehouse_id };
+    let warehouse_id = delivery_warehouse_scope(&user)?;
     let current = sqlx::query_as::<_, (String, String)>("SELECT status_code, status FROM delivery_tracking WHERE id = $1 AND ($2::text IS NULL OR warehouse_id = $2)")
         .bind(id).bind(&warehouse_id).fetch_optional(&db).await.map_err(internal_error)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "배송 항목 없음".to_string()))?;
@@ -1637,7 +1673,7 @@ async fn track_delivery(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
     let api_key = env::var("SWEET_TRACKER_API_KEY").map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "SWEET_TRACKER_API_KEY is not configured".to_string()))?;
-    let warehouse_id = if user.role == "서버 관리자" { None } else { user.warehouse_id };
+    let warehouse_id = delivery_warehouse_scope(&user)?;
     let delivery = sqlx::query_as::<_, (String, String, String)>(
         "SELECT carrier_code, invoice_no, warehouse_id FROM delivery_tracking WHERE id = $1 AND ($2::text IS NULL OR warehouse_id = $2)",
     ).bind(input.id).bind(warehouse_id).fetch_optional(&db).await.map_err(internal_error)?

@@ -69,8 +69,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setUser(updated);
           localStorage.setItem('wms_auth_user', JSON.stringify(updated));
         }
-      } else if (res.status === 404) {
-        // 계정 삭제됨 → 강제 로그아웃
+      } else if (res.status === 401 || res.status === 403 || res.status === 404) {
+        // Deleted, revoked, or no-longer-authorized accounts must not stay locally authenticated.
         setUser(null);
         localStorage.removeItem('wms_auth_user');
       }
@@ -84,6 +84,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   useEffect(() => {
     refreshUser();
   }, [refreshUser]);
+
+  useEffect(() => {
+    if (!user) return;
+    const timer = window.setInterval(() => {
+      void refreshUser();
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [refreshUser, user?.email]);
 
   const login = async (emailOrUsername: string, passwordInput?: string): Promise<boolean> => {
     try {

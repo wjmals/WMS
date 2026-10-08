@@ -56,8 +56,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(detected);
     }
     return await proxy(req, 'GET');
-  } catch {
-    return NextResponse.json([], { status: 200 });
+  } catch (error) {
+    console.error('[proxy] GET /api/delivery error:', error);
+    return NextResponse.json({ error: error instanceof Error ? error.message : '배송 목록을 불러오지 못했습니다.' }, { status: 503 });
   }
 }
 

@@ -58,6 +58,7 @@ export default function DeliveryManagementPage() {
 
   const [deliveries, setDeliveries] = useState<DeliveryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState('');
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('전체');
 
@@ -80,9 +81,15 @@ export default function DeliveryManagementPage() {
     try {
       const res = await fetch('/api/delivery');
       const data = await res.json();
+      if (!res.ok) {
+        setListError(data?.error || '배송 목록을 불러오지 못했습니다.');
+        return;
+      }
+      setListError('');
       setDeliveries(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
+      setListError('배송 서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.');
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -98,7 +105,13 @@ export default function DeliveryManagementPage() {
         body: JSON.stringify({ id: item.id }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || '택배사 배송 조회에 실패했습니다.');
+      if (!response.ok) {
+        const reason = String(result.error || '택배사 배송 조회에 실패했습니다.');
+        if (response.status === 503 && reason.includes('SWEET_TRACKER_API_KEY')) {
+          throw new Error('실시간 택배 조회 설정이 완료되지 않았습니다. 운영자에게 문의해주세요.');
+        }
+        throw new Error(reason);
+      }
       await fetchDeliveries(false);
       if (selectedItem?.id === item.id) {
         setSelectedItem((current) => current ? { ...current, status: result.status, status_code: result.statusCode, tracking_details: result.trackingDetails, current_location: result.currentLocation } : null);
@@ -226,7 +239,7 @@ export default function DeliveryManagementPage() {
             배송 기록 및 상태 관리
           </h1>
           <p className="text-sm text-textMuted mt-1">
-            운송장 등록과 상태 수동 변경 • 외부 택배사 실시간 조회는 연동되지 않습니다.
+            같은 창고의 배송 건을 공유합니다. 완료 건은 24시간 후 목록에서 숨겨집니다.
           </p>
         </div>
 
@@ -247,6 +260,8 @@ export default function DeliveryManagementPage() {
           </button>
         </div>
       </div>
+
+      {listError && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{listError}</div>}
 
       {/* KPI 통계 카드 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
