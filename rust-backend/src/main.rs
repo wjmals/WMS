@@ -844,8 +844,8 @@ async fn submit_movement_import(
         if row.quantity.is_zero() {
             return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래 수량은 0일 수 없습니다. 0 수량 행은 최신 화면에서 자동 제외되어야 합니다. 화면을 새로고침하고 다시 업로드하세요.", source_row)));
         }
-        if row.occurred_at >= Utc::now() {
-            return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래일은 현재보다 과거여야 합니다.", source_row)));
+        if row.occurred_at.date_naive() > Utc::now().date_naive() {
+            return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래일은 오늘 또는 과거 날짜여야 합니다.", source_row)));
         }
         if row.note.trim().is_empty() {
             return Err((StatusCode::BAD_REQUEST, format!("{}행: 거래 사유(note)가 비어 있습니다.", source_row)));
