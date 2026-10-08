@@ -223,6 +223,8 @@ struct HistoricalMovementImport {
     source_name: String,
     #[serde(default, alias = "newItems")]
     new_items: Vec<HistoricalInventorySeed>,
+    #[serde(default, alias = "allowDuplicates")]
+    allow_duplicates: bool,
     rows: Vec<HistoricalMovementRow>,
 }
 
@@ -836,6 +838,7 @@ async fn submit_movement_import(
             .execute(&mut *transaction).await.map_err(internal_error)?;
         Some(id)
     } else { None };
+    let mut duplicate_movements = Vec::new();
     for (row_index, row) in input.rows.into_iter().enumerate() {
         let source_row = row.source_row.unwrap_or(row_index + 2);
         if !matches!(row.movement_type.as_str(), "inbound" | "outbound" | "adjustment") {
@@ -868,9 +871,33 @@ async fn submit_movement_import(
             "outbound" => -magnitude,
             _ => row.quantity * multiplier,
         };
+        let duplicate_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (
+                SELECT 1 FROM inventory_movements
+                WHERE warehouse_id=$1 AND inventory_item_id=$2 AND created_at=$3 AND movement_type=$4 AND quantity_delta=$5
+            ) OR EXISTS (
+                SELECT 1 FROM inventory_movement_import_rows r
+                JOIN inventory_movement_import_batches b ON b.id=r.batch_id
+                WHERE b.warehouse_id=$1 AND r.inventory_item_id=$2 AND r.occurred_at=$3 AND r.movement_type=$4 AND r.quantity_delta=$5 AND b.status='PENDING'
+            )",
+        ).bind(&warehouse_id).bind(item.0).bind(row.occurred_at).bind(&row.movement_type).bind(delta)
+            .fetch_one(&mut *transaction).await.map_err(internal_error)?;
+        if duplicate_exists {
+            duplicate_movements.push(serde_json::json!({
+                "sourceRow": source_row,
+                "itemName": item.1,
+                "occurredAt": row.occurred_at,
+                "movementType": row.movement_type,
+                "quantity": delta
+            }));
+        }
         sqlx::query("INSERT INTO inventory_movement_import_rows (batch_id,inventory_item_id,item_name,occurred_at,movement_type,quantity_delta,note,reference) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
             .bind(batch_id.unwrap()).bind(item.0).bind(item.1).bind(row.occurred_at).bind(row.movement_type).bind(delta).bind(row.note.trim()).bind(row.reference.unwrap_or_default())
             .execute(&mut *transaction).await.map_err(internal_error)?;
+    }
+    if !input.allow_duplicates && !duplicate_movements.is_empty() {
+        let details = serde_json::to_string(&duplicate_movements).unwrap_or_else(|_| "[]".to_string());
+        return Err((StatusCode::CONFLICT, format!("DUPLICATE_MOVEMENTS:{}", details)));
     }
     transaction.commit().await.map_err(internal_error)?;
     Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"batchId":batch_id,"status":if batch_id.is_some(){"PENDING"}else{"IMPORTED"},"rows":row_count,"createdItems":created_items}))))

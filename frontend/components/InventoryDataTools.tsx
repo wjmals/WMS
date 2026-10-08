@@ -211,17 +211,34 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           reference: cellText(find(entry.record, 'reference', 'document', '참조', '전표번호')).trim(),
         });
       }
-      const response = await fetch(`${rustApi}/import`, {
+      const importPayload = { warehouseId, sourceName: file.name, newItems: Array.from(seedItems.values()), rows: payloadRows };
+      const submitImport = (allowDuplicates = false) => fetch(`${rustApi}/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ warehouseId, sourceName: file.name, newItems: Array.from(seedItems.values()), rows: payloadRows }),
+        body: JSON.stringify({ ...importPayload, allowDuplicates }),
       });
-      const responseText = await response.text();
-      let result: { error?: string; rows?: number; createdItems?: number };
-      try {
-        result = JSON.parse(responseText);
-      } catch {
-        result = { error: responseText.trim() || `서버 응답을 읽지 못했습니다 (${response.status}).` };
+      const readImportResponse = async (response: Response): Promise<{ error?: string; rows?: number; createdItems?: number }> => {
+        const responseText = await response.text();
+        try {
+          return JSON.parse(responseText);
+        } catch {
+          return { error: responseText.trim() || `서버 응답을 읽지 못했습니다 (${response.status}).` };
+        }
+      };
+      let response = await submitImport();
+      let result = await readImportResponse(response);
+      const duplicatePrefix = 'DUPLICATE_MOVEMENTS:';
+      if (response.status === 409 && result.error?.startsWith(duplicatePrefix)) {
+        const duplicates = JSON.parse(result.error.slice(duplicatePrefix.length)) as Array<{ sourceRow: number; itemName: string; occurredAt: string; movementType: string; quantity: string | number }>;
+        const summary = duplicates.slice(0, 12).map((duplicate) =>
+          `${duplicate.sourceRow}행 · ${duplicate.itemName} · ${new Date(duplicate.occurredAt).toLocaleString('ko-KR')} · ${duplicate.movementType} ${duplicate.quantity}`
+        ).join('\n');
+        const remaining = duplicates.length > 12 ? `\n외 ${duplicates.length - 12}건` : '';
+        if (!window.confirm(`이미 등록되었거나 승인 대기 중인 동일 거래 ${duplicates.length}건을 찾았습니다.\n\n${summary}${remaining}\n\n그래도 중복 등록할까요?`)) {
+          throw new Error('중복 거래는 등록하지 않았습니다.');
+        }
+        response = await submitImport(true);
+        result = await readImportResponse(response);
       }
       if (!response.ok) throw new Error(result.error || `과거 거래를 제출하지 못했습니다 (${response.status}).`);
       setFile(null);
