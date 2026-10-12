@@ -185,11 +185,12 @@ export default function BarcodeScannerPage() {
   const handleStockAdjust = async (direction: 'inbound' | 'outbound') => {
     if (!selectedItem) return;
     const enteredUnit = adjustUnit === 'package' && selectedItem.packageUnit ? selectedItem.packageUnit : selectedItem.unit;
-    const baseDelta = adjustAmount * (adjustUnit === 'package' ? selectedItem.packageSize || 1 : 1) * (direction === 'outbound' ? -1 : 1);
-    if (!Number.isFinite(baseDelta) || baseDelta <= 0 || (direction === 'outbound' && baseDelta > selectedItem.current)) {
+    const enteredQuantity = adjustAmount * (adjustUnit === 'package' ? selectedItem.packageSize || 1 : 1);
+    if (!Number.isFinite(enteredQuantity) || enteredQuantity <= 0 || (direction === 'outbound' && enteredQuantity > selectedItem.current)) {
       setUpdateMsg({ type: 'error', text: '수량을 확인하세요. 현재 잔량보다 많이 출고할 수 없습니다.' });
       return;
     }
+    const baseDelta = enteredQuantity * (direction === 'outbound' ? -1 : 1);
     const newCurrent = selectedItem.current + baseDelta;
     try {
       const res = await fetch('/api/inventory', {
