@@ -1988,14 +1988,15 @@ async fn users_action(
             let admin_email = if role == "관리자" {
                 None
             } else {
-                input.admin_email
+                let requested_admin = required(input.admin_email, "adminEmail")?.trim().to_lowercase();
+                let approved_manager = sqlx::query_scalar::<_, String>(
+                    "SELECT email FROM users WHERE lower(email)=$1 AND role='관리자' AND status='APPROVED' AND warehouse_id IS NOT NULL",
+                ).bind(&requested_admin).fetch_optional(&db).await.map_err(internal_error)?;
+                Some(approved_manager.ok_or_else(|| (
+                    StatusCode::CONFLICT,
+                    "승인 완료된 창고 관리자 계정이 아닙니다. 서버 관리자가 승인한 관리자 이메일을 입력하세요.".to_string(),
+                ))?)
             };
-            if role != "관리자" && admin_email.is_none() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "창고 관리자 이메일이 필요합니다.".to_string(),
-                ));
-            }
             let existing = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM users WHERE email = $1 OR username = $2",
             )

@@ -70,7 +70,7 @@ export default function SignupPage() {
           <Info className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
           <div>
             <span className="font-bold block mb-0.5">승인 절차 안내</span>
-            가입 신청 후 서버 관리자의 승인(관리자 신청 시) 또는 창고 관리자의 승인(창고지기 신청 시) 완료 시 대시보드를 바로 사용할 수 있습니다.
+              관리자 계정은 서버 관리자의 승인이 필요합니다. 창고지기는 서버 관리자가 승인한 창고 관리자 계정이 있어야 가입을 신청할 수 있습니다.
           </div>
         </div>
 
@@ -146,7 +146,7 @@ export default function SignupPage() {
           {role === '창고지기' && (
             <div>
               <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
-                승인할 창고 관리자 이메일
+                승인 완료된 창고 관리자 이메일
               </label>
               <div className="relative">
                 <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -155,12 +155,12 @@ export default function SignupPage() {
                   required
                   value={adminEmail}
                   onChange={(e) => setAdminEmail(e.target.value)}
-                  placeholder="manager@company.com"
+                  placeholder="승인된 관리자 이메일"
                   className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white dark:focus:bg-gray-900 transition-all"
                 />
               </div>
               <p className="mt-1.5 text-[11px] text-textMuted">
-                입력한 관리자가 가입 신청을 승인하면 창고를 사용할 수 있습니다.
+                승인되지 않은 관리자 계정은 창고지기 가입 대상으로 사용할 수 없습니다.
               </p>
             </div>
           )}
