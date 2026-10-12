@@ -250,6 +250,16 @@ Rust API의 성공 응답에는 `token`이 포함된다. Next.js 브라우저 �
 
 투명한 기준선 모델로 품목별 다음 7일 출고량을 계산하고, 마지막 7일을 하루씩 앞당기는 rolling-origin 백테스트 MAPE를 반환한다. 모델은 직전 28개 완료 일자의 평균 출고량을 다음 날 예측값으로 사용한다. 오늘 진행 중인 날짜는 학습과 평가에서 제외한다. 최소 28일 학습 + 7일 검증 이력이 없는 품목에는 `insufficient_data`, `forecastOutflow7d: null`, `mapePct: null`을 반환한다. 실제 출고가 0인 검증일은 MAPE 표본에서 제외하며, 비영 출고 검증일이 없으면 MAPE는 측정 불가다.
 
+각 품목은 `safetyStockMode`(`manual`/`auto`), `safetyStockPrompted`, `safetyStockLeadTimeDays`, `safetyStockServiceLevel`, `safetyStockEligible`, `suggestedSafetyStock`, `historyDays`, `outboundDays`도 반환한다. 자동 전환 안내 자격은 완료일 이력 35일 이상 및 최근 28일 중 출고 발생일 5일 이상이다. 자동 추천은 외부 AI 모델이 아니라 최근 28일 일별 출고 표준편차 기반 통계 계산이며, 기본 서비스 수준 95%, 기본 리드타임 7일을 사용한다.
+
+$$안전재고 = Z \times \sigma_{28일\ 일별\ 출고량} \times \sqrt{리드타임\ 일수}$$
+
+기본 95% 서비스 수준에서 $Z=1.645$다. 수동 모드에서는 사용자가 입력한 안전재고를 유지한다. 자동 모드는 새 출고 기록 이후 최근 28일 통계로 값을 갱신한다.
+
+### `POST /api/inventory/safety-stock`
+
+창고 사용자가 품목의 안전재고 모드를 `manual` 또는 `auto`로 전환한다. 요청 예: `{"id":"uuid","warehouseId":"wh_example","mode":"auto","leadTimeDays":7}`. `leadTimeDays`는 1~60이며 생략 시 품목의 기존 리드타임을 유지한다. 자동 모드는 적격 데이터가 부족하면 `409`와 현재 일수 기준을 반환한다. 전환/알림 응답 여부와 리드타임은 품목에 저장된다.
+
 응답의 전체 `mapePct`는 품목별 비영 출고 검증일 수로 가중한 값이다. `accuracyPct`는 UI 참고용 `max(0, 100 - MAPE)` 변환치이며 정확도 보증이 아니다. `targetMet`은 92% 기준을 참고로 평가한다. 품절률은 재고가 없어 미충족된 주문/수요가 DB에 기록되지 않으므로 항상 `null`이며 `stockoutMetricStatus`는 `not_measurable`이다. 출고량 기준선은 실제 수요 예측이나 발주 권고를 뜻하지 않는다.
 
 ### `GET /api/inventory/ledger?warehouseId=<id>&days=90`

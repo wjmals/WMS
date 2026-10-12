@@ -24,6 +24,9 @@ type InventoryItem = {
   recommendation: string;
   cycle: string;
   date: string;
+  safetyStockMode: 'manual' | 'auto';
+  safetyStockLeadTimeDays: number;
+  safetyStockServiceLevel: number;
 };
 
 export default function InventoryReportPage() {
@@ -41,6 +44,9 @@ export default function InventoryReportPage() {
 
   // 모달 상태
   const [selectedReportItem, setSelectedReportItem] = useState<InventoryItem | null>(null);
+  const [safeStockDraft, setSafeStockDraft] = useState('');
+  const [leadTimeDraft, setLeadTimeDraft] = useState('7');
+  const [savingSafetyStock, setSavingSafetyStock] = useState(false);
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [summaryContent, setSummaryContent] = useState('');
 
@@ -119,6 +125,68 @@ export default function InventoryReportPage() {
       await fetchData();
     } catch (e) {
       alert(e instanceof Error ? e.message : '삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  const saveManualSafetyStock = async () => {
+    if (!selectedReportItem) return;
+    const safe = Number(safeStockDraft);
+    if (!safeStockDraft.trim() || !Number.isFinite(safe) || safe < 0) {
+      alert('안전재고는 0 이상의 숫자여야 합니다.');
+      return;
+    }
+    setSavingSafetyStock(true);
+    try {
+      const response = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedReportItem.id,
+          warehouseId: user?.warehouseId || 'wh_wjmals',
+          current: selectedReportItem.current,
+          safe,
+          safetyStockMode: 'manual',
+          movementType: 'adjustment',
+          note: '사용자 수동 안전재고 설정',
+          source: 'manual',
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '안전재고를 저장하지 못했습니다.');
+      setSelectedReportItem(result);
+      setData((current) => current.map((item) => item.id === result.id ? result : item));
+      await fetchData(true);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '안전재고를 저장하지 못했습니다.');
+    } finally {
+      setSavingSafetyStock(false);
+    }
+  };
+
+  const setSafetyStockMode = async (mode: 'manual' | 'auto') => {
+    if (!selectedReportItem) return;
+    setSavingSafetyStock(true);
+    try {
+      const response = await fetch('/api/inventory/safety-stock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedReportItem.id,
+          warehouseId: user?.warehouseId || 'wh_wjmals',
+          mode,
+          leadTimeDays: Number(leadTimeDraft),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '안전재고 모드를 바꾸지 못했습니다.');
+      setSelectedReportItem(result);
+      setSafeStockDraft(String(result.safe));
+      setData((current) => current.map((item) => item.id === result.id ? result : item));
+      await fetchData(true);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '안전재고 모드를 바꾸지 못했습니다.');
+    } finally {
+      setSavingSafetyStock(false);
     }
   };
 
@@ -404,7 +472,7 @@ export default function InventoryReportPage() {
 
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setSelectedReportItem(item)}
+                      onClick={() => { setSelectedReportItem(item); setSafeStockDraft(String(item.safe)); setLeadTimeDraft(String(item.safetyStockLeadTimeDays || 7)); }}
                       className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 text-primary rounded-xl text-xs font-bold transition-all shadow-sm"
                     >
                       <FileText size={14} />
@@ -486,6 +554,19 @@ export default function InventoryReportPage() {
                 <div className="p-4 bg-purple-50/50 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/40 rounded-2xl text-sm leading-relaxed text-textMain dark:text-gray-200 break-keep">
                   {selectedReportItem.recommendation}
                 </div>
+              </div>
+
+              <div className="space-y-3 rounded-2xl border border-gray-200 dark:border-gray-700 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-bold">안전재고 설정</h4>
+                    <p className="text-xs text-textMuted">현재 {selectedReportItem.safe.toLocaleString()} {selectedReportItem.unit} · {selectedReportItem.safetyStockMode === 'auto' ? '자동 계산 사용 중' : '수동 설정 사용 중'}</p>
+                  </div>
+                  {selectedReportItem.safetyStockMode === 'auto' ? <button disabled={savingSafetyStock} onClick={() => void setSafetyStockMode('manual')} className="rounded border border-gray-300 px-3 py-2 text-xs font-semibold disabled:opacity-50">수동 설정으로 전환</button> : <button disabled={savingSafetyStock} onClick={() => void setSafetyStockMode('auto')} className="rounded border border-primary px-3 py-2 text-xs font-semibold text-primary disabled:opacity-50">자동 계산으로 전환</button>}
+                </div>
+                {selectedReportItem.safetyStockMode === 'manual' && <div className="flex flex-wrap items-end gap-2"><label className="text-xs">수동 안전재고 ({selectedReportItem.unit})<input type="number" min="0" step="0.000001" value={safeStockDraft} onChange={(event) => setSafeStockDraft(event.target.value)} className="mt-1 block w-40 rounded border border-gray-300 bg-white px-2 py-2 text-gray-900" /></label><button disabled={savingSafetyStock} onClick={() => void saveManualSafetyStock()} className="rounded bg-primary px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{savingSafetyStock ? '저장 중...' : '수동 값 저장'}</button></div>}
+                {selectedReportItem.safetyStockMode === 'auto' && <label className="text-xs">조달 리드타임 (일)<input type="number" min="1" max="60" step="1" value={leadTimeDraft} onChange={(event) => setLeadTimeDraft(event.target.value)} className="mt-1 block w-32 rounded border border-gray-300 bg-white px-2 py-2 text-gray-900" /><button disabled={savingSafetyStock} onClick={() => void setSafetyStockMode('auto')} className="mt-2 rounded bg-primary px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">리드타임 및 추천값 저장</button></label>}
+                <p className="text-xs leading-relaxed text-textMuted">자동 계산은 외부 AI 모델이 아닌 출고 이력 기반 통계식입니다. 완료일 35일 이상 및 출고 기록일 5일 이상일 때 활성화됩니다. 안전재고 = Z × 최근 28일 일별 출고 표준편차 × √리드타임. 기본 서비스 수준 95%에서 Z=1.645이며, 새 출고 기록 때 추천값을 갱신합니다. 언제든 수동 모드로 전환해 직접 입력할 수 있습니다.</p>
               </div>
 
               {/* 세부 수급 지표 그리드 */}

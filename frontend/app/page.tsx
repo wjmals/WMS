@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
@@ -57,6 +57,14 @@ type ForecastItem = {
   mapePct: number | null;
   accuracyPct: number | null;
   mapeSampleDays: number;
+  outboundDays: number;
+  safetyStockMode: 'manual' | 'auto';
+  safetyStockPrompted: boolean;
+  safetyStockLeadTimeDays: number;
+  safetyStockServiceLevel: number;
+  safetyStockEligible: boolean;
+  suggestedSafetyStock: number | null;
+  safetyStockFormula: string;
 };
 
 type ForecastData = {
@@ -98,6 +106,8 @@ export default function InventoryDashboard() {
   const [movementDays, setMovementDays] = useState<MovementDay[]>([]);
   const [forecastData, setForecastData] = useState<ForecastData | null>(null);
   const [loading, setLoading] = useState(true);
+  const safetyPromptRunningRef = useRef(false);
+  const safetyPromptedItemsRef = useRef(new Set<string>());
 
   // 구역 설정 모달 상태
   const [showZoneModal, setShowZoneModal] = useState(false);
@@ -161,6 +171,47 @@ export default function InventoryDashboard() {
       return () => clearInterval(timer);
     }
   }, [user, fetchData]);
+
+  useEffect(() => {
+    if (!user || !forecastData || safetyPromptRunningRef.current) return;
+    const candidates = forecastData.items.filter((item) =>
+      item.safetyStockEligible && item.safetyStockMode === 'manual' && !item.safetyStockPrompted
+      && item.suggestedSafetyStock !== null && !safetyPromptedItemsRef.current.has(item.itemId)
+    );
+    if (candidates.length === 0) return;
+    safetyPromptRunningRef.current = true;
+    void (async () => {
+      try {
+        for (const item of candidates) {
+          safetyPromptedItemsRef.current.add(item.itemId);
+          const useAutomatic = window.confirm(
+            `${item.itemName}의 출고 데이터가 충분히 쌓였습니다 (${item.historyDays}일, 출고 기록 ${item.outboundDays}일).\n\n최근 28일의 출고 변동을 이용해 안전재고 ${item.suggestedSafetyStock?.toLocaleString()} ${item.unit}를 자동 계산했습니다.\n\n자동 계산으로 전환할까요? 취소를 선택하면 현재 설정을 유지하고 이 안내는 다시 표시하지 않습니다.`
+          );
+          const response = await fetch('/api/inventory/safety-stock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: item.itemId,
+              warehouseId: user.warehouseId || 'wh_wjmals',
+              mode: useAutomatic ? 'auto' : 'manual',
+              leadTimeDays: item.safetyStockLeadTimeDays || 7,
+            }),
+          });
+          const result = await response.json();
+          if (!response.ok) {
+            window.alert(result.error || `${item.itemName} 안전재고 설정을 저장하지 못했습니다.`);
+            continue;
+          }
+          setItems((current) => current.map((entry) => entry.id === item.itemId ? { ...entry, safe: result.safe, status: result.status, statusLabel: result.statusLabel } : entry));
+        }
+      } catch (error) {
+        console.error('안전재고 설정 저장 실패', error);
+      } finally {
+        safetyPromptRunningRef.current = false;
+        await fetchData();
+      }
+    })();
+  }, [fetchData, forecastData, user]);
 
   // 수요예측 필터 선택
 

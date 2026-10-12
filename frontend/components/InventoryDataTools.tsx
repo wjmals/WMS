@@ -296,6 +296,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           warehouseId,
           current: item.current,
           safe,
+          safetyStockMode: 'manual',
           movementType: 'adjustment',
           note: '안전재고 기준 설정',
           source: 'manual',

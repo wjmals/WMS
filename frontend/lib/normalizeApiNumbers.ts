@@ -1,6 +1,8 @@
 const decimalFields = new Set([
   'current',
   'safe',
+  'suggestedSafetyStock',
+  'safetyStockServiceLevel',
   'packageSize',
   'capacity',
   'currentStockSum',
