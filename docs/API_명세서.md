@@ -1,7 +1,7 @@
 # WMS API 명세서
 
 - 버전: 1.1
-- 갱신일: 2026-10-07
+- 갱신일: 2026-10-12
 - 백엔드: Rust, Axum, SQLx, PostgreSQL 16
 - 프론트엔드 프록시: Next.js `/api/*` -> Rust API
 - 기본 Rust URL: `http://localhost:8080`
@@ -77,7 +77,7 @@ Next.js 경유 요청은 자동으로 쿠키 세션을 전달한다. Rust API �
 
 `username`에는 이메일 또는 아이디를 사용할 수 있고, `email`로도 대체 가능하다.
 
-내장 서버 관리자: 아이디 `wjmals`, 이메일 `wjmals@wms-smartstock.ai`. 비밀번호는 현재 Rust 구현에 하드코딩되어 있으며 `users` 테이블에는 저장되지 않는다.
+내장 서버 관리자: 아이디 `wjmals`, 이메일 `wjmals@wms-smartstock.ai`. 비밀번호는 `SUPER_ADMIN_PASSWORD` 환경변수에서만 읽으며 `users` 테이블에는 저장되지 않는다.
 
 비밀번호는 `SUPER_ADMIN_PASSWORD` 환경변수에서만 읽는다. 안전한 배포 비밀로 설정해야 하며 설정되지 않으면 서버 관리자 로그인은 `503`으로 거부된다. JWT 서명 키는 `JWT_SECRET` 환경변수에 충분히 무작위인 고정 값으로 설정한다. 로컬 개발에서 생략하면 프로세스 시작 때 임시 키를 생성하므로 API 재시작 후 기존 세션은 무효화된다.
 

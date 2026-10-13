@@ -129,6 +129,9 @@ export default function SuperAdminConsole() {
 
   const warehouseAdmins = allUsers.filter(u => u.role === '관리자' && u.email !== user.email);
   const warehouseKeepers = allUsers.filter(u => u.role === '창고지기');
+  const unassignedKeepers = warehouseKeepers.filter((keeper) => (
+    !keeper.adminEmail || !warehouseAdmins.some((admin) => admin.email.toLowerCase() === keeper.adminEmail?.toLowerCase())
+  ));
 
   return (
     <div className="flex flex-col gap-8 max-w-[1200px] mx-auto font-sans pb-16">
@@ -189,57 +192,27 @@ export default function SuperAdminConsole() {
 
       {/* 1. 신규 창고 관리자 가입 신청 승인 센터 (PENDING_ADMIN) */}
       <section className="bg-white dark:bg-gray-900 border border-amber-200 dark:border-amber-900/40 rounded-3xl p-6 md:p-8 shadow-sm space-y-4">
-        <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-800 pb-4">
+        <div className="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-gray-800">
           <div>
-            <div className="flex items-center gap-2 text-amber-600 font-bold text-xs uppercase mb-1">
-              <Clock className="w-4 h-4" />
-              WAREHOUSE MANAGER APPROVAL CENTER
-            </div>
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-              📋 신규 창고 관리자 회원가입 승인 신청 ({pendingAdmins.length}건)
-            </h2>
-            <p className="text-xs text-textMuted mt-0.5">
-              창고 관리자로 가입 신청한 계정입니다. 승인 시 정식 관리자 권한이 즉시 부여됩니다.
-            </p>
+            <div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase text-amber-600"><Clock className="h-4 w-4" />WAREHOUSE MANAGER APPROVAL CENTER</div>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white">신규 창고 관리자 회원가입 승인 신청 ({pendingAdmins.length}건)</h2>
+            <p className="mt-0.5 text-xs text-textMuted">관리자로 가입 신청한 계정입니다.</p>
           </div>
         </div>
-
         {pendingAdmins.length === 0 ? (
-          <div className="p-8 text-center bg-gray-50 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800 space-y-1">
-            <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
-            <p className="text-sm font-bold text-gray-800 dark:text-gray-200">현재 승인 대기 중인 신규 창고 관리자가 없습니다.</p>
-            <p className="text-xs text-textMuted">모든 가입 신청이 정상 처리되었습니다.</p>
-          </div>
+          <div className="rounded-2xl border border-gray-100 bg-gray-50 p-8 text-center text-sm text-textMuted dark:border-gray-800 dark:bg-gray-800/40">현재 승인 대기 중인 신규 창고 관리자가 없습니다.</div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {pendingAdmins.map((req) => (
-              <div key={req.id} className="p-5 rounded-2xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 flex items-center justify-between gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {pendingAdmins.map((request) => (
+              <div key={request.id} className="flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50/60 p-5 dark:border-amber-900/50 dark:bg-amber-950/20">
                 <div>
-                  <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-bold inline-block mb-1">
-                    창고 관리자 가입 요청
-                  </span>
-                  <h4 className="font-extrabold text-base text-gray-900 dark:text-white">{req.name}</h4>
-                  <p className="text-xs font-mono text-textMuted">{req.email}</p>
+                  <span className="mb-1 inline-block rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">창고 관리자 가입 요청</span>
+                  <h4 className="text-base font-extrabold text-gray-900 dark:text-white">{request.name}</h4>
+                  <p className="font-mono text-xs text-textMuted">{request.email}</p>
                 </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => handleApproveAdmin(req.email)}
-                    disabled={loading}
-                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1.5"
-                  >
-                    <UserCheck className="w-4 h-4" />
-                    창고 관리자 승인
-                  </button>
-
-                  <button
-                    onClick={() => handleDeleteUser(req.email, '신청 관리자')}
-                    disabled={loading}
-                    className="p-2 bg-red-100 dark:bg-red-950/50 text-red-600 hover:bg-red-200 rounded-xl transition-all"
-                    title="신청 거절/삭제"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button onClick={() => handleApproveAdmin(request.email)} disabled={loading} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-md transition-all hover:bg-emerald-700 disabled:opacity-50"><UserCheck className="h-4 w-4" />창고 관리자 승인</button>
+                  <button onClick={() => handleDeleteUser(request.email, '신청 관리자')} disabled={loading} className="rounded-xl bg-red-100 p-2 text-red-600 transition-all hover:bg-red-200 disabled:opacity-50 dark:bg-red-950/50" title="신청 거절/삭제"><Trash2 className="h-4 w-4" /></button>
                 </div>
               </div>
             ))}
@@ -247,175 +220,68 @@ export default function SuperAdminConsole() {
         )}
       </section>
 
-      {/* 2. 등록된 창고 관리자 & 하위 소속 창고지기 열람/삭제 관제 (아코디언 형태) */}
+      {/* 2. 관리자별 소속 창고지기 디렉터리 */}
       <section className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-6 md:p-8 shadow-sm space-y-4">
-        <div className="border-b border-gray-100 dark:border-gray-800 pb-4">
-          <div className="flex items-center gap-2 text-primary font-bold text-xs uppercase mb-1">
-            <Users className="w-4 h-4" />
-            MANAGERS & KEEPERS DIRECTORY
-          </div>
-          <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-            👔 승인된 창고 관리자 & 소속 창고지기 통합 관리 ({warehouseAdmins.length}명)
-          </h2>
-          <p className="text-xs text-textMuted mt-0.5">
-            창고 관리자를 클릭하면 하위에 등록되어 있는 소속 창고지기 목록을 펼쳐볼 수 있으며 계정을 자유롭게 삭제할 수 있습니다.
-          </p>
+        <div className="border-b border-gray-100 pb-4 dark:border-gray-800">
+          <div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase text-primary"><Users className="h-4 w-4" />MANAGERS & KEEPERS DIRECTORY</div>
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white">창고 관리자별 사용자 목록 ({warehouseAdmins.length}개 창고 관리자)</h2>
+          <p className="mt-0.5 text-xs text-textMuted">관리자를 열면 소속 창고지기와 승인 상태를 확인할 수 있습니다.</p>
         </div>
-
         {warehouseAdmins.length === 0 ? (
-          <div className="p-8 text-center bg-gray-50 dark:bg-gray-800/40 rounded-2xl text-xs text-textMuted">
-            등록된 창고 관리자가 없습니다.
-          </div>
+          <div className="rounded-2xl bg-gray-50 p-8 text-center text-xs text-textMuted dark:bg-gray-800/40">등록된 창고 관리자가 없습니다.</div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {warehouseAdmins.map((admin) => {
-              const isExpanded = expandedManagerEmail === admin.email;
-              const subKeepers = warehouseKeepers.filter(k => k.adminEmail === admin.email);
-
+              const groupKey = `users:${admin.email}`;
+              const isExpanded = expandedManagerEmail === groupKey;
+              const members = warehouseKeepers.filter((keeper) => keeper.adminEmail?.toLowerCase() === admin.email.toLowerCase());
               return (
-                <div key={admin.id} className="border border-gray-200 dark:border-gray-800 rounded-2xl overflow-hidden bg-gray-50/30 dark:bg-gray-800/30 transition-all">
-                  
-                  {/* 창고 관리자 카드 헤더 */}
-                  <div className="p-4 flex items-center justify-between gap-4 bg-white dark:bg-gray-900">
-                    <button
-                      onClick={() => setExpandedManagerEmail(isExpanded ? null : admin.email)}
-                      className="flex items-center gap-3 text-left flex-1 hover:opacity-80 transition-all"
-                    >
-                      <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-950/50 text-primary flex items-center justify-center font-bold">
-                        👔
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-extrabold text-sm text-gray-900 dark:text-white">{admin.name}</h4>
-                          <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300 text-[10px] font-bold">
-                            창고 관리자
-                          </span>
-                          <span className="text-xs text-textMuted">
-                            (소속 창고지기 {subKeepers.length}명)
-                          </span>
-                        </div>
-                        <p className="text-xs font-mono text-textMuted">{admin.email} • 창고 ID: {admin.warehouseId || 'wh_default'}</p>
-                      </div>
-                      <div className="text-gray-400 pl-2">
-                        {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                      </div>
+                <section key={admin.id} className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
+                  <div className="flex items-center gap-2 p-3">
+                    <button aria-expanded={isExpanded} onClick={() => setExpandedManagerEmail(isExpanded ? null : groupKey)} className="flex min-w-0 flex-1 items-center gap-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                      {isExpanded ? <ChevronUp size={17} className="shrink-0 text-primary" /> : <ChevronDown size={17} className="shrink-0 text-textMuted" />}
+                      <span className="min-w-0">
+                        <strong className="block truncate text-sm text-gray-900 dark:text-white">창고 관리자 {admin.name} ({members.length}명)</strong>
+                        <span className="block truncate text-xs text-textMuted">{admin.email} · {admin.warehouseId || '창고 미배정'} · {admin.status === 'APPROVED' ? '승인됨' : '승인 대기'}</span>
+                      </span>
                     </button>
-
-                    <button
-                      onClick={() => handleDeleteUser(admin.email, '창고 관리자')}
-                      className="px-3.5 py-2 bg-red-50 dark:bg-red-950/40 text-red-600 hover:bg-red-100 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border border-red-200 dark:border-red-900/40"
-                    >
-                      <Trash2 size={13} />
-                      관리자 계정 삭제
-                    </button>
+                    <button onClick={() => handleDeleteUser(admin.email, '창고 관리자')} disabled={loading} title="창고 관리자 삭제" className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"><Trash2 size={15} /></button>
                   </div>
-
-                  {/* 하위 소속 창고지기 목록 (아코디언 펼침) */}
                   {isExpanded && (
-                    <div className="p-4 bg-gray-100/60 dark:bg-gray-800/60 border-t border-gray-200 dark:border-gray-700 space-y-2">
-                      <h5 className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-2">
-                        📦 '{admin.name}' 관리자 소속 창고지기 목록 ({subKeepers.length}명)
-                      </h5>
-
-                      {subKeepers.length === 0 ? (
-                        <p className="text-xs text-textMuted italic py-2">
-                          현재 이 창고 관리자에 등록된 창고지기가 없습니다.
-                        </p>
-                      ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {subKeepers.map((keeper) => (
-                            <div key={keeper.id} className="p-3 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                              <div>
-                                <span className="font-bold text-xs text-gray-900 dark:text-white block">📦 {keeper.name}</span>
-                                <span className="text-[11px] font-mono text-textMuted">{keeper.email}</span>
-                              </div>
-
-                              <button
-                                onClick={() => handleDeleteUser(keeper.email, '창고지기')}
-                                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-all text-xs font-bold flex items-center gap-1"
-                                title="창고지기 삭제"
-                              >
-                                <Trash2 size={13} />
-                                삭제
-                              </button>
-                            </div>
-                          ))}
+                    <div className="space-y-2 border-t border-gray-200 bg-gray-50/70 p-3 dark:border-gray-800 dark:bg-gray-900/50">
+                      {members.length === 0 ? <p className="px-2 py-3 text-xs text-textMuted">소속 창고지기가 없습니다.</p> : members.map((member) => (
+                        <div key={member.id} className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
+                          <div className="min-w-0"><strong className="block truncate text-xs text-gray-900 dark:text-white">{member.name}</strong><span className="block truncate font-mono text-[11px] text-textMuted">{member.email}</span></div>
+                          <div className="flex shrink-0 items-center gap-2"><span className={`text-[11px] font-bold ${member.status === 'APPROVED' ? 'text-emerald-600' : 'text-amber-600'}`}>{member.status === 'APPROVED' ? '승인됨' : '창고 승인 대기'}</span><button onClick={() => handleDeleteUser(member.email, '창고지기')} disabled={loading} title="창고지기 삭제" className="rounded-lg p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"><Trash2 size={14} /></button></div>
                         </div>
-                      )}
+                      ))}
                     </div>
                   )}
-
-                </div>
+                </section>
               );
             })}
           </div>
         )}
       </section>
 
-      {/* 3. 전체 사용자 목록 통합 보기 */}
+      {/* 3. 미배정 창고지기 */}
       <section className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-6 md:p-8 shadow-sm space-y-4">
-        <div className="border-b border-gray-100 dark:border-gray-800 pb-4 flex justify-between items-center">
-          <div>
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-              👥 전체 사용자 통합 목록 ({allUsers.length}명)
-            </h2>
-            <p className="text-xs text-textMuted mt-0.5">시스템 전체 사용자의 계정 권한 및 삭제 관리</p>
+        <div>
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white">미배정 창고지기 ({unassignedKeepers.length}명)</h2>
+          <p className="mt-0.5 text-xs text-textMuted">연결된 창고 관리자 그룹을 찾을 수 없는 계정입니다.</p>
+        </div>
+        {unassignedKeepers.length === 0 ? (
+          <p className="rounded-xl bg-gray-50 p-4 text-center text-xs text-textMuted">미배정 계정이 없습니다.</p>
+        ) : (
+          <div className="space-y-2">
+            {unassignedKeepers.map((keeper) => (
+              <div key={keeper.id} className="flex items-center justify-between rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                <div><strong className="block text-sm">{keeper.name}</strong><span className="text-xs text-textMuted">{keeper.email} · {keeper.status === 'APPROVED' ? '승인됨' : '창고 승인 대기'}</span></div>
+                <button onClick={() => handleDeleteUser(keeper.email, '창고지기')} disabled={loading} title="창고지기 삭제" className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"><Trash2 size={15} /></button>
+              </div>
+            ))}
           </div>
-        </div>
-
-        <div className="overflow-x-auto rounded-2xl border border-gray-200 dark:border-gray-800">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-gray-200 dark:border-gray-800 text-textMuted font-bold uppercase bg-gray-50 dark:bg-gray-800/60">
-                <th className="py-3 px-4">이름</th>
-                <th className="py-3 px-4">이메일 계정</th>
-                <th className="py-3 px-4">역할 (Role)</th>
-                <th className="py-3 px-4">상태</th>
-                <th className="py-3 px-4 text-right">계정 삭제</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-semibold">
-              {allUsers.map((u) => (
-                <tr key={u.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/50">
-                  <td className="py-3.5 px-4 font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                    {u.role === '서버 관리자' ? '👑' : u.role === '관리자' ? '👔' : '📦'} {u.name}
-                  </td>
-                  <td className="py-3.5 px-4 font-mono text-gray-600 dark:text-gray-300">{u.email}</td>
-                  <td className="py-3.5 px-4">
-                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                      u.role === '서버 관리자'
-                        ? 'bg-purple-100 text-purple-800 dark:bg-purple-950/50 dark:text-purple-300'
-                        : u.role === '관리자'
-                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300'
-                        : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
-                    }`}>
-                      {u.role}
-                    </span>
-                  </td>
-                  <td className="py-3.5 px-4">
-                    <span className={`flex items-center gap-1 text-[11px] font-bold ${
-                      u.status === 'APPROVED' ? 'text-emerald-600' : 'text-amber-600'
-                    }`}>
-                      <CheckCircle2 size={13} />
-                      {u.status === 'APPROVED' ? '승인됨' : '대기 중'}
-                    </span>
-                  </td>
-                  <td className="py-3.5 px-4 text-right">
-                    {u.role !== '서버 관리자' && (
-                      <button
-                        onClick={() => handleDeleteUser(u.email, u.role)}
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-all"
-                        title="계정 삭제"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        )}
       </section>
 
     </div>
