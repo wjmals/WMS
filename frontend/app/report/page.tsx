@@ -10,6 +10,15 @@ import { useAuth } from '../../context/AuthContext';
 import InventoryDataTools from '../../components/InventoryDataTools';
 import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
 
+async function readApiResponse<T>(response: Response, fallback: string): Promise<T & { error?: string }> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T & { error?: string };
+  } catch {
+    return { error: text.trim() || `${fallback} (${response.status})` } as T & { error?: string };
+  }
+}
+
 type InventoryItem = {
   id: string;
   status: string;
@@ -151,7 +160,7 @@ export default function InventoryReportPage() {
           source: 'manual',
         }),
       });
-      const result = await response.json();
+      const result = await readApiResponse<InventoryItem>(response, '안전재고를 저장하지 못했습니다.');
       if (!response.ok) throw new Error(result.error || '안전재고를 저장하지 못했습니다.');
       setSelectedReportItem(result);
       setData((current) => current.map((item) => item.id === result.id ? result : item));
@@ -177,7 +186,7 @@ export default function InventoryReportPage() {
           leadTimeDays: Number(leadTimeDraft),
         }),
       });
-      const result = await response.json();
+      const result = await readApiResponse<InventoryItem>(response, '안전재고 모드를 바꾸지 못했습니다.');
       if (!response.ok) throw new Error(result.error || '안전재고 모드를 바꾸지 못했습니다.');
       setSelectedReportItem(result);
       setSafeStockDraft(String(result.safe));

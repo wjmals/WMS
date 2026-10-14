@@ -80,6 +80,15 @@ type ForecastData = {
   items: ForecastItem[];
 };
 
+async function readApiResponse<T>(response: Response, fallback: string): Promise<T & { error?: string }> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T & { error?: string };
+  } catch {
+    return { error: text.trim() || `${fallback} (${response.status})` } as T & { error?: string };
+  }
+}
+
 function getOutboundTrend(rows: MovementDay[]) {
   const active = rows.filter((row) => row.movementCount > 0);
   if (active.length < 2) return '실제 변동 데이터가 2일 이상 쌓이면 출고 추세를 계산합니다.';
@@ -197,7 +206,7 @@ export default function InventoryDashboard() {
               leadTimeDays: item.safetyStockLeadTimeDays || 7,
             }),
           });
-          const result = await response.json();
+          const result = await readApiResponse<InventoryItem>(response, `${item.itemName} 안전재고 설정을 저장하지 못했습니다.`);
           if (!response.ok) {
             window.alert(result.error || `${item.itemName} 안전재고 설정을 저장하지 못했습니다.`);
             continue;
