@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
   AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck,
   Warehouse, Settings, X, Edit2, Camera, Sparkles, Barcode, Plus, Trash2, Box
@@ -11,6 +11,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import SuperAdminConsole from '../components/SuperAdminConsole';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
+import { formatQty } from '../lib/formatQuantity';
 
 type InventoryItem = {
   id: string;
@@ -128,11 +129,13 @@ export default function InventoryDashboard() {
   const [showAddInvModal, setShowAddInvModal] = useState(false);
   const [newInvName, setNewInvName] = useState('');
   const [newInvBarcode, setNewInvBarcode] = useState('');
-  const [newInvCurrent, setNewInvCurrent] = useState<number>(10000);
-  const [newInvSafe, setNewInvSafe] = useState<number>(8000);
-  const [newInvUnit, setNewInvUnit] = useState('톤');
+  const [newInvCurrent, setNewInvCurrent] = useState<string>('');
+  const [newInvSafe, setNewInvSafe] = useState<string>('');
+  const [newInvUnit, setNewInvUnit] = useState('ea');
   const [newInvPackageUnit, setNewInvPackageUnit] = useState('');
-  const [newInvPackageSize, setNewInvPackageSize] = useState<number>(1);
+  const [newInvPackageSize, setNewInvPackageSize] = useState<string>('1');
+  const [newInvPalletUnit, setNewInvPalletUnit] = useState('');
+  const [newInvPalletSize, setNewInvPalletSize] = useState<string>('1');
   const [newInvCycle, setNewInvCycle] = useState('월간');
   const [savingInv, setSavingInv] = useState(false);
 
@@ -142,7 +145,7 @@ export default function InventoryDashboard() {
   const [newZoneName, setNewZoneName] = useState('');
   const [newZoneTemp, setNewZoneTemp] = useState('-20°C');
   const [newZoneCapacity, setNewZoneCapacity] = useState<number>(100000);
-  const [newZoneCapacityUnit, setNewZoneCapacityUnit] = useState('톤');
+  const [newZoneCapacityUnit, setNewZoneCapacityUnit] = useState('ea');
   const [newZoneSelectedItems, setNewZoneSelectedItems] = useState<string[]>([]);
   const [creatingZone, setCreatingZone] = useState(false);
 
@@ -194,7 +197,7 @@ export default function InventoryDashboard() {
         for (const item of candidates) {
           safetyPromptedItemsRef.current.add(item.itemId);
           const useAutomatic = window.confirm(
-            `${item.itemName}의 출고 데이터가 충분히 쌓였습니다 (${item.historyDays}일, 출고 기록 ${item.outboundDays}일).\n\n최근 28일의 출고 변동을 이용해 안전재고 ${item.suggestedSafetyStock?.toLocaleString()} ${item.unit}를 자동 계산했습니다.\n\n자동 계산으로 전환할까요? 취소를 선택하면 현재 설정을 유지하고 이 안내는 다시 표시하지 않습니다.`
+            `${item.itemName}의 출고 데이터가 충분히 쌓였습니다 (${item.historyDays}일, 출고 기록 ${item.outboundDays}일).\n\n최근 28일의 출고 변동을 이용해 안전재고 ${formatQty(item.suggestedSafetyStock)} ${item.unit}를 자동 계산했습니다.\n\n자동 계산으로 전환할까요? 취소를 선택하면 현재 설정을 유지하고 이 안내는 다시 표시하지 않습니다.`
           );
           const response = await fetch('/api/inventory/safety-stock', {
             method: 'POST',
@@ -236,11 +239,13 @@ export default function InventoryDashboard() {
         body: JSON.stringify({
           name: newInvName.trim(),
           barcode: newInvBarcode.trim() || undefined,
-          current: Number(newInvCurrent),
-          safe: Number(newInvSafe),
-          unit: newInvUnit.trim(),
+          current: Number(newInvCurrent || 0),
+          safe: Number(newInvSafe || 0),
+          unit: newInvUnit.trim() || 'ea',
           packageUnit: newInvPackageUnit.trim() || undefined,
-          packageSize: Number(newInvPackageSize),
+          packageSize: Number(newInvPackageSize) || 1,
+          palletUnit: newInvPalletUnit.trim() || undefined,
+          palletSize: Number(newInvPalletSize) || 1,
           note: '초기 재고 등록',
           cycle: newInvCycle,
           warehouseId: user?.warehouseId,
@@ -250,11 +255,13 @@ export default function InventoryDashboard() {
         setShowAddInvModal(false);
         setNewInvName('');
         setNewInvBarcode('');
-        setNewInvCurrent(10000);
-        setNewInvSafe(8000);
-        setNewInvUnit('톤');
+        setNewInvCurrent('');
+        setNewInvSafe('');
+        setNewInvUnit('ea');
         setNewInvPackageUnit('');
-        setNewInvPackageSize(1);
+        setNewInvPackageSize('1');
+        setNewInvPalletUnit('');
+        setNewInvPalletSize('1');
         await fetchData();
       } else {
         alert('재고 품목 추가 실패');
@@ -445,9 +452,10 @@ export default function InventoryDashboard() {
     totals.set(unit, current);
     return totals;
   }, new Map<string, { current: number; safe: number }>()).entries());
-  const shortageItems = items.filter(i => i.status === 'shortage');
-  const overstockItems = items.filter(i => i.status === 'overstock');
-  const safeItems = items.filter(i => i.status === 'safe');
+  const isUnsetSafe = (item: InventoryItem) => item.safe <= 0;
+  const shortageItems = items.filter(i => !isUnsetSafe(i) && i.status === 'shortage');
+  const overstockItems = items.filter(i => !isUnsetSafe(i) && i.status === 'overstock');
+  const safeItems = items.filter(i => !isUnsetSafe(i) && i.status === 'safe');
 
   // 구역 수정 모달 열기
   const handleOpenZoneEdit = (zone: ZoneData) => {
@@ -568,9 +576,9 @@ export default function InventoryDashboard() {
             <span className="text-xs font-bold uppercase">총 보관 재고량</span>
             <Warehouse size={18} className="text-primary" />
           </div>
-          <h3 className="text-2xl font-bold text-textMain dark:text-white">
+          <h3 className="text-xl sm:text-2xl font-bold text-textMain dark:text-white break-words">
             {loading ? '—' : stockTotalsByUnit.length
-              ? stockTotalsByUnit.map(([unit, totals]) => `${totals.current.toLocaleString()} ${unit}`).join(' · ')
+              ? stockTotalsByUnit.map(([unit, totals]) => `${formatQty(totals.current)} ${unit}`).join(' · ')
               : '0'}
           </h3>
           <p className="text-xs text-textMuted mt-1">총 {items.length}개 보관 품목 운용 중</p>
@@ -658,20 +666,22 @@ export default function InventoryDashboard() {
                       📦 {item.name}
                     </td>
                     <td className="py-3 px-3 font-mono text-primary font-bold">
-                      {item.current.toLocaleString()} {item.unit}
+                      {formatQty(item.current)} {item.unit}
                     </td>
                     <td className="py-3 px-3 font-mono text-gray-500">
-                      {item.safe.toLocaleString()} {item.unit}
+                      {formatQty(item.safe)} {item.unit}
                     </td>
                     <td className="py-3 px-3">
                       <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                        item.status === 'safe'
+                        isUnsetSafe(item)
+                          ? 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
+                          : item.status === 'safe'
                           ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
                           : item.status === 'shortage'
                           ? 'bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-300'
                           : 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
                       }`}>
-                        {item.statusLabel}
+                        {isUnsetSafe(item) ? '안전재고 미설정' : item.statusLabel}
                       </span>
                     </td>
                     <td className="py-3 px-3 text-textMuted">{item.cycle || '월간'}</td>
@@ -787,10 +797,10 @@ export default function InventoryDashboard() {
                 </div>
 
                 <div className="bg-gray-50 dark:bg-gray-800/60 rounded-xl p-3 space-y-2">
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between flex-wrap gap-x-2 text-xs">
                     <span className="text-textMuted">실보관 / 수용용량</span>
-                    <strong className="text-textMain dark:text-white font-mono">
-                      {currentSum.toLocaleString()} {zone.capacityUnit || '톤'} / {capacity.toLocaleString()} {zone.capacityUnit || '톤'}
+                    <strong className="text-textMain dark:text-white font-mono break-all text-right">
+                      {formatQty(currentSum)} {zone.capacityUnit || '톤'} / {formatQty(capacity)} {zone.capacityUnit || '톤'}
                     </strong>
                   </div>
                   <div className="flex justify-between text-xs">
@@ -826,15 +836,16 @@ export default function InventoryDashboard() {
         {movementDays.some((row) => row.movementCount > 0) ? (
           <div className="h-[280px] w-full mt-6">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={movementDays}>
+              <BarChart data={movementDays.map((row) => ({ ...row, adjustments: Math.abs(row.adjustments) }))}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="day" tick={{ fontSize: 10 }} minTickGap={24} />
-                <YAxis tick={{ fontSize: 10 }} />
-                <Tooltip />
-                <Line type="monotone" dataKey="inbound" name="입고량" stroke="#059669" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="outbound" name="출고량" stroke="#dc2626" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="adjustments" name="기타 조정" stroke="#64748b" strokeWidth={1.5} dot={false} />
-              </LineChart>
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={(value) => formatQty(value)} width={56} />
+                <Tooltip formatter={(value) => formatQty(value as number)} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="inbound" name="입고량" fill="#059669" maxBarSize={14} />
+                <Bar dataKey="outbound" name="출고량" fill="#dc2626" maxBarSize={14} />
+                <Bar dataKey="adjustments" name="기타 조정 변동폭(삭제·실사·비전)" fill="#64748b" maxBarSize={14} />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         ) : (
@@ -870,7 +881,7 @@ export default function InventoryDashboard() {
             <p className="text-xs text-textMuted">품목별 7일 기준 출고량</p>
             {forecastData?.items.length ? (
               <ul className="mt-2 space-y-1 text-xs">
-                {forecastData.items.slice(0, 4).map((forecast) => <li key={forecast.itemId} className="flex justify-between gap-2"><span className="truncate">{forecast.itemName}</span><span className="shrink-0 font-mono">{forecast.forecastOutflow7d == null ? `기록 ${forecast.historyDays}일` : `${forecast.forecastOutflow7d.toLocaleString()} ${forecast.unit}`}</span></li>)}
+                {forecastData.items.slice(0, 4).map((forecast) => <li key={forecast.itemId} className="flex justify-between gap-2"><span className="truncate">{forecast.itemName}</span><span className="shrink-0 font-mono">{forecast.forecastOutflow7d == null ? `기록 ${forecast.historyDays}일` : `${formatQty(forecast.forecastOutflow7d)} ${forecast.unit}`}</span></li>)}
               </ul>
             ) : <p className="mt-2 text-xs text-textMuted">활성 품목 또는 장부가 없습니다.</p>}
           </div>
@@ -886,7 +897,7 @@ export default function InventoryDashboard() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-gray-900 rounded-3xl max-w-md w-full p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-4"
+              className="bg-white dark:bg-gray-900 rounded-3xl max-w-md w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-4"
             >
               <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-800 pb-3">
                 <h3 className="font-bold text-lg text-textMain dark:text-white flex items-center gap-2">
@@ -922,16 +933,16 @@ export default function InventoryDashboard() {
                   />
                 </div>
 
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="font-bold text-textMuted uppercase block mb-1">현재 수량 ({newInvUnit})</label>
                     <input
                       type="number"
                       required
                       min="0"
-                      step="0.000001"
+                      step="any"
                       value={newInvCurrent}
-                      onChange={e => setNewInvCurrent(Number(e.target.value))}
+                      onChange={e => setNewInvCurrent(e.target.value)}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
                     />
                   </div>
@@ -941,23 +952,29 @@ export default function InventoryDashboard() {
                       type="number"
                       required
                       min="0"
-                      step="0.000001"
+                      step="any"
                       value={newInvSafe}
-                      onChange={e => setNewInvSafe(Number(e.target.value))}
+                      onChange={e => setNewInvSafe(e.target.value)}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
                     />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-3">
-                  <label className="text-xs font-bold text-textMuted">기준 단위
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <label className="text-xs font-bold text-textMuted">기본 단위 (ea)
                     <input required maxLength={16} value={newInvUnit} onChange={(event) => setNewInvUnit(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
                   </label>
-                  <label className="text-xs font-bold text-textMuted">포장 단위
-                    <input maxLength={16} placeholder="상자" value={newInvPackageUnit} onChange={(event) => setNewInvPackageUnit(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
+                  <label className="text-xs font-bold text-textMuted">박스 단위
+                    <input maxLength={16} placeholder="박스" value={newInvPackageUnit} onChange={(event) => setNewInvPackageUnit(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
                   </label>
-                  <label className="text-xs font-bold text-textMuted">포장당 {newInvUnit}
-                    <input type="number" required min="0.000001" step="0.000001" value={newInvPackageSize} onChange={(event) => setNewInvPackageSize(Number(event.target.value))} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
+                  <label className="text-xs font-bold text-textMuted">박스당 {newInvUnit} 수
+                    <input type="number" min="0" step="any" value={newInvPackageSize} onChange={(event) => setNewInvPackageSize(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
+                  </label>
+                  <label className="text-xs font-bold text-textMuted">파렛 단위
+                    <input maxLength={16} placeholder="파렛트" value={newInvPalletUnit} onChange={(event) => setNewInvPalletUnit(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
+                  </label>
+                  <label className="text-xs font-bold text-textMuted">파렛당 {newInvUnit} 수
+                    <input type="number" min="0" step="any" value={newInvPalletSize} onChange={(event) => setNewInvPalletSize(event.target.value)} className="mt-1 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs text-textMain" />
                   </label>
                 </div>
 
@@ -1004,7 +1021,7 @@ export default function InventoryDashboard() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-gray-900 rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-4"
+              className="bg-white dark:bg-gray-900 rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-4"
             >
               <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-800 pb-3">
                 <h3 className="font-bold text-lg text-textMain dark:text-white flex items-center gap-2">
@@ -1060,7 +1077,7 @@ export default function InventoryDashboard() {
                       type="number"
                       required
                       min="1000"
-                      step="0.000001"
+                      step="any"
                       value={newZoneCapacity}
                       onChange={e => setNewZoneCapacity(Number(e.target.value))}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono"
@@ -1128,7 +1145,7 @@ export default function InventoryDashboard() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-gray-900 rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-5"
+              className="bg-white dark:bg-gray-900 rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-5"
             >
               <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-800 pb-3">
                 <div className="flex items-center gap-2">
@@ -1158,7 +1175,7 @@ export default function InventoryDashboard() {
                   />
                 </div>
 
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="font-bold text-textMuted uppercase block mb-1">보관 온도</label>
                     <input
@@ -1173,7 +1190,7 @@ export default function InventoryDashboard() {
                     <input
                       type="number"
                       min="1000"
-                      step="0.000001"
+                      step="any"
                       value={editingZone.capacity || 100000}
                       onChange={e => setEditingZone({ ...editingZone, capacity: Number(e.target.value) })}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"

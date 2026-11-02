@@ -77,6 +77,10 @@ struct InventoryItem {
     package_unit: Option<String>,
     #[serde(rename = "packageSize")]
     package_size: Decimal,
+    #[serde(rename = "palletUnit")]
+    pallet_unit: Option<String>,
+    #[serde(rename = "palletSize")]
+    pallet_size: Decimal,
     status: String,
     #[serde(rename = "statusLabel")]
     status_label: String,
@@ -110,6 +114,10 @@ struct CreateInventoryItem {
     package_unit: Option<String>,
     #[serde(alias = "packageSize")]
     package_size: Option<Decimal>,
+    #[serde(default, alias = "palletUnit")]
+    pallet_unit: Option<String>,
+    #[serde(default, alias = "palletSize")]
+    pallet_size: Option<Decimal>,
     note: Option<String>,
     cycle: Option<String>,
 }
@@ -232,12 +240,19 @@ struct MovementQuery {
     #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
     days: Option<i32>,
+    operator: Option<String>,
+    source: Option<String>,
+    #[serde(alias = "movementType")]
+    movement_type: Option<String>,
+    item: Option<String>,
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
 struct ForecastQuery {
     #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
+    #[serde(alias = "historyDays")]
     history_days: Option<i32>,
 }
 
@@ -472,6 +487,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         sqlx::query("ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT '톤', ADD COLUMN IF NOT EXISTS package_unit TEXT, ADD COLUMN IF NOT EXISTS package_size NUMERIC(20,6) NOT NULL DEFAULT 1, ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
             .execute(pool).await?;
+        sqlx::query("ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS pallet_unit TEXT, ADD COLUMN IF NOT EXISTS pallet_size NUMERIC(20,6) NOT NULL DEFAULT 1, ADD COLUMN IF NOT EXISTS pending_batch_id UUID")
+            .execute(pool).await?;
         sqlx::query("ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS safety_stock_mode TEXT NOT NULL DEFAULT 'manual', ADD COLUMN IF NOT EXISTS safety_stock_prompted BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS safety_stock_lead_time_days INTEGER NOT NULL DEFAULT 7, ADD COLUMN IF NOT EXISTS safety_stock_service_level NUMERIC(5,4) NOT NULL DEFAULT 0.9500")
             .execute(pool).await?;
         sqlx::query("ALTER TABLE inventory_items DROP CONSTRAINT IF EXISTS inventory_items_safety_stock_mode_check, ADD CONSTRAINT inventory_items_safety_stock_mode_check CHECK (safety_stock_mode IN ('manual','auto')), DROP CONSTRAINT IF EXISTS inventory_items_safety_stock_lead_time_days_check, ADD CONSTRAINT inventory_items_safety_stock_lead_time_days_check CHECK (safety_stock_lead_time_days BETWEEN 1 AND 60), DROP CONSTRAINT IF EXISTS inventory_items_safety_stock_service_level_check, ADD CONSTRAINT inventory_items_safety_stock_service_level_check CHECK (safety_stock_service_level > 0 AND safety_stock_service_level < 1)")
@@ -520,6 +537,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sqlx::query("CREATE TABLE IF NOT EXISTS inventory_movement_import_batches (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE, submitted_by TEXT NOT NULL, submitted_email TEXT NOT NULL, source_name TEXT NOT NULL, row_count INTEGER NOT NULL CHECK (row_count > 0), status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')), reviewed_by TEXT, reviewed_email TEXT, reviewed_at TIMESTAMPTZ, review_note TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
             .execute(pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS inventory_movement_import_rows (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), batch_id UUID NOT NULL REFERENCES inventory_movement_import_batches(id) ON DELETE CASCADE, inventory_item_id UUID NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT, item_name TEXT NOT NULL, occurred_at TIMESTAMPTZ NOT NULL, movement_type TEXT NOT NULL CHECK (movement_type IN ('inbound','outbound','adjustment')), quantity_delta NUMERIC(20,6) NOT NULL CHECK (quantity_delta <> 0), note TEXT NOT NULL, reference TEXT NOT NULL DEFAULT '')")
+            .execute(pool).await?;
+        sqlx::query("ALTER TABLE inventory_movement_import_batches DROP CONSTRAINT IF EXISTS inventory_movement_import_batches_row_count_check")
+            .execute(pool).await?;
+        sqlx::query("ALTER TABLE inventory_movement_import_rows DROP CONSTRAINT IF EXISTS inventory_movement_import_rows_movement_type_check, ADD CONSTRAINT inventory_movement_import_rows_movement_type_check CHECK (movement_type IN ('inbound','outbound','adjustment','vision_estimate'))")
             .execute(pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS inventory_vision_estimates (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE, inventory_item_id UUID REFERENCES inventory_items(id) ON DELETE RESTRICT, item_name TEXT NOT NULL, estimated_quantity NUMERIC(20,6) NOT NULL CHECK (estimated_quantity >= 0), unit TEXT NOT NULL, confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100), recommendation TEXT NOT NULL, reason TEXT NOT NULL, image_snapshot TEXT, submitted_by TEXT NOT NULL, submitted_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')), reviewed_by TEXT, reviewed_email TEXT, reviewed_at TIMESTAMPTZ, review_note TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
             .execute(pool).await?;
@@ -841,7 +862,7 @@ async fn list_inventory(
         .warehouse_id
         .unwrap_or_else(|| "wh_wjmals".to_string());
     let items = sqlx::query_as::<_, InventoryItem>(
-        "SELECT id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at
+        "SELECT id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,pallet_unit,pallet_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at
          FROM inventory_items WHERE warehouse_id=$1 AND archived_at IS NULL ORDER BY name",
     )
     .bind(warehouse_id)
@@ -858,15 +879,18 @@ async fn create_inventory(
     Json(input): Json<CreateInventoryItem>,
 ) -> Result<(StatusCode, Json<InventoryItem>), (StatusCode, String)> {
     let package_size = input.package_size.unwrap_or(Decimal::ONE);
+    let pallet_size = input.pallet_size.unwrap_or(Decimal::ONE);
     let unit = input
         .unit
         .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("톤");
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("ea");
     if input.name.trim().is_empty()
         || input.current < Decimal::ZERO
         || input.safe < Decimal::ZERO
         || package_size <= Decimal::ZERO
+        || pallet_size <= Decimal::ZERO
     {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -876,6 +900,10 @@ async fn create_inventory(
     if unit.chars().count() > 16
         || input
             .package_unit
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty() || value.chars().count() > 16)
+        || input
+            .pallet_unit
             .as_deref()
             .is_some_and(|value| value.trim().is_empty() || value.chars().count() > 16)
     {
@@ -890,14 +918,15 @@ async fn create_inventory(
     let (status, status_label, diff_text, recommendation) =
         classify_stock(input.current, input.safe, unit);
     let item = sqlx::query_as::<_, InventoryItem>(
-        "INSERT INTO inventory_items (warehouse_id,name,barcode,unit,package_unit,package_size,current,safe,status,status_label,diff_text,recommendation,cycle,date)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,CURRENT_DATE)
-         RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
+        "INSERT INTO inventory_items (warehouse_id,name,barcode,unit,package_unit,package_size,pallet_unit,pallet_size,current,safe,status,status_label,diff_text,recommendation,cycle,date)
+         VALUES ($1,$2,$3,$4,$5,$6,$14,$15,$7,$8,$9,$10,$11,$12,$13,CURRENT_DATE)
+         RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,pallet_unit,pallet_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
     ).bind(&input.warehouse_id).bind(input.name.trim())
         .bind(input.barcode.as_deref().filter(|value| !value.trim().is_empty()))
         .bind(unit).bind(input.package_unit.as_deref().filter(|value| !value.trim().is_empty())).bind(package_size)
         .bind(input.current).bind(input.safe).bind(status).bind(status_label).bind(diff_text).bind(recommendation)
         .bind(input.cycle.unwrap_or_else(|| "월간".to_string()))
+        .bind(input.pallet_unit.as_deref().map(str::trim).filter(|value| !value.is_empty())).bind(pallet_size)
         .fetch_one(&mut *transaction).await.map_err(internal_error)?;
     let reason = input
         .note
@@ -922,7 +951,7 @@ async fn update_inventory(
 ) -> Result<Json<InventoryItem>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
     let mut transaction = db.begin().await.map_err(internal_error)?;
-    let existing = sqlx::query_as::<_, (String, String, Decimal, Decimal, String, Option<String>, Decimal, String, i32, Decimal)>("SELECT warehouse_id,name,current,safe,unit,package_unit,package_size,safety_stock_mode,safety_stock_lead_time_days,safety_stock_service_level FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL FOR UPDATE")
+    let existing = sqlx::query_as::<_, (String, String, Decimal, Decimal, String, Option<String>, Decimal, String, i32, Decimal, Option<String>, Decimal)>("SELECT warehouse_id,name,current,safe,unit,package_unit,package_size,safety_stock_mode,safety_stock_lead_time_days,safety_stock_service_level,pallet_unit,pallet_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL FOR UPDATE")
         .bind(input.id).bind(&input.warehouse_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "해당 아이템을 찾을 수 없습니다.".to_string()))?;
     let reason = input
@@ -962,16 +991,20 @@ async fn update_inventory(
             ));
         }
         let entered_unit = input.quantity_unit.as_deref().unwrap_or(&existing.4);
-        let multiplier = if entered_unit == existing.4 {
-            Decimal::ONE
-        } else if existing.5.as_deref() == Some(entered_unit) {
-            existing.6
-        } else {
-            return Err((
+        let multiplier = unit_multiplier(
+            entered_unit,
+            &existing.4,
+            existing.5.as_deref(),
+            existing.6,
+            existing.10.as_deref(),
+            existing.11,
+        )
+        .ok_or_else(|| {
+            (
                 StatusCode::BAD_REQUEST,
-                "quantityUnit must match the item's base or package unit".to_string(),
-            ));
-        };
+                "quantityUnit must match the item's base, package, or pallet unit".to_string(),
+            )
+        })?;
         let converted = quantity * multiplier;
         if movement_type == "outbound" {
             -converted
@@ -1020,7 +1053,7 @@ async fn update_inventory(
     let mut item = sqlx::query_as::<_, InventoryItem>(
         "UPDATE inventory_items SET current=$1,safe=$2,safety_stock_mode=$3,status=$4,status_label=$5,diff_text=$6,recommendation=$7,updated_at=now()
          WHERE id=$8 AND warehouse_id=$9
-         RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
+         RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,pallet_unit,pallet_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
     ).bind(current).bind(safe).bind(safety_stock_mode).bind(status).bind(status_label).bind(diff_text).bind(recommendation)
     .bind(input.id).bind(input.warehouse_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "해당 아이템을 찾을 수 없습니다.".to_string()))?;
@@ -1049,7 +1082,7 @@ async fn update_inventory(
                     classify_stock(item.current, recommended, &item.unit);
                 item = sqlx::query_as::<_, InventoryItem>(
                 "UPDATE inventory_items SET safe=$1,status=$2,status_label=$3,diff_text=$4,recommendation=$5,updated_at=now() WHERE id=$6 AND warehouse_id=$7
-                 RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
+                 RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,pallet_unit,pallet_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
             ).bind(recommended).bind(status).bind(status_label).bind(diff_text).bind(recommendation).bind(item.id).bind(&item.warehouse_id)
                 .fetch_one(&mut *transaction).await.map_err(internal_error)?;
             }
@@ -1126,7 +1159,10 @@ async fn set_safety_stock_mode(
             .filter(|(_, value)| *value > Decimal::ZERO)
             .count();
         if !safety_stock_data_is_eligible(history.len(), recent_outbound_days) {
-            return Err((StatusCode::CONFLICT, format!("자동 안전재고를 계산하려면 완료일 35일 이상과 최근 28일 중 출고 기록일 5일 이상이 필요합니다. 현재 완료일 {}일, 최근 출고 기록일 {}일입니다.", history.len(), recent_outbound_days)));
+            let pending_imports = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_movement_import_batches WHERE warehouse_id=$1 AND status='PENDING'")
+                .bind(&warehouse_id).fetch_one(&mut *transaction).await.map_err(internal_error)?;
+            let hint = if pending_imports > 0 { format!(" 승인 대기 중인 가져오기 {}건은 승인 후 반영됩니다.", pending_imports) } else { String::new() };
+            return Err((StatusCode::CONFLICT, format!("자동 안전재고를 계산하려면 완료일 35일 이상과 최근 28일 중 출고 기록일 5일 이상이 필요합니다. 현재 완료일 {}일, 최근 출고 기록일 {}일입니다.{}", history.len(), recent_outbound_days, hint)));
         }
         let recent = history
             .iter()
@@ -1147,7 +1183,7 @@ async fn set_safety_stock_mode(
     let updated = sqlx::query_as::<_, InventoryItem>(
         "UPDATE inventory_items SET safe=$1,safety_stock_mode=$2,safety_stock_prompted=TRUE,safety_stock_lead_time_days=$3,status=$4,status_label=$5,diff_text=$6,recommendation=$7,updated_at=now()
          WHERE id=$8 AND warehouse_id=$9
-         RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
+         RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,pallet_unit,pallet_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
     ).bind(safe).bind(&input.mode).bind(lead_time_days).bind(status).bind(status_label).bind(diff_text).bind(recommendation)
         .bind(input.id).bind(&warehouse_id).fetch_one(&mut *transaction).await.map_err(internal_error)?;
     sqlx::query("INSERT INTO inventory_audit_events (warehouse_id,actor_id,actor_email,action,entity_type,entity_id,before_data,after_data,reason,source) VALUES ($1,$2,$3,'update','inventory_item',$4,$5,$6,$7,'safety_stock')")
@@ -1177,6 +1213,11 @@ async fn delete_inventory(
         .ok_or_else(|| (StatusCode::NOT_FOUND, "활성 재고 품목을 찾을 수 없습니다.".to_string()))?;
     sqlx::query("UPDATE inventory_items SET archived_at=now(),updated_at=now() WHERE id=$1 AND warehouse_id=$2")
         .bind(query.id).bind(&query.warehouse_id).execute(&mut *transaction).await.map_err(internal_error)?;
+    if item.1 > Decimal::ZERO {
+        sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email) VALUES ($1,$2,$3,'adjustment',$4,0,$5,'archive',$6,$7)")
+            .bind(&query.warehouse_id).bind(query.id).bind(&item.0).bind(-item.1).bind(reason).bind(&user.id).bind(&user.email)
+            .execute(&mut *transaction).await.map_err(internal_error)?;
+    }
     sqlx::query("INSERT INTO inventory_audit_events (warehouse_id,actor_id,actor_email,action,entity_type,entity_id,before_data,after_data,reason,source) VALUES ($1,$2,$3,'archive','inventory_item',$4,$5,$6,$7,'api')")
         .bind(&query.warehouse_id).bind(&user.id).bind(&user.email).bind(query.id.to_string())
         .bind(serde_json::json!({"name": item.0, "current": item.1, "safe": item.2}))
@@ -1222,6 +1263,11 @@ async fn submit_movement_import(
     let db = state.db.ok_or_else(database_not_configured)?;
     let mut transaction = db.begin().await.map_err(internal_error)?;
     let mut created_items = 0;
+    let row_count = input.rows.len();
+    let batch_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO inventory_movement_import_batches (id,warehouse_id,submitted_by,submitted_email,source_name,row_count) VALUES ($1,$2,$3,$4,$5,$6)")
+        .bind(batch_id).bind(&warehouse_id).bind(&user.id).bind(&user.email).bind(input.source_name.trim()).bind(row_count as i32)
+        .execute(&mut *transaction).await.map_err(internal_error)?;
     for item in input.new_items {
         let name = item.name.trim();
         let unit = item.unit.trim();
@@ -1252,44 +1298,27 @@ async fn submit_movement_import(
         }
         let (status, status_label, diff_text, recommendation) =
             classify_stock(item.current, safe, unit);
-        let created = sqlx::query_as::<_, (Uuid, String)>(
-            "INSERT INTO inventory_items (warehouse_id,name,barcode,unit,current,safe,status,status_label,diff_text,recommendation,cycle,date)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'월간',CURRENT_DATE)
+        sqlx::query_as::<_, (Uuid, String)>(
+            "INSERT INTO inventory_items (warehouse_id,name,barcode,unit,current,safe,status,status_label,diff_text,recommendation,cycle,date,archived_at,pending_batch_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'월간',CURRENT_DATE,now(),$11)
              RETURNING id,name",
         ).bind(&warehouse_id).bind(name).bind(barcode).bind(unit).bind(item.current).bind(safe)
-            .bind(status).bind(status_label).bind(diff_text).bind(recommendation)
+            .bind(status).bind(status_label).bind(diff_text).bind(recommendation).bind(batch_id)
             .fetch_one(&mut *transaction).await.map_err(internal_error)?;
-        sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email) VALUES ($1,$2,$3,'initial',$4,$4,'Excel initial stock','historical_import',$5,$6)")
-            .bind(&warehouse_id).bind(created.0).bind(&created.1).bind(item.current).bind(&user.id).bind(&user.email)
-            .execute(&mut *transaction).await.map_err(internal_error)?;
-        sqlx::query("INSERT INTO inventory_audit_events (warehouse_id,actor_id,actor_email,action,entity_type,entity_id,after_data,reason,source) VALUES ($1,$2,$3,'create','inventory_item',$4,$5,'Excel initial stock','historical_import')")
-            .bind(&warehouse_id).bind(&user.id).bind(&user.email).bind(created.0.to_string())
-            .bind(serde_json::json!({"name":created.1,"current":item.current,"safe":safe,"unit":unit}))
-            .execute(&mut *transaction).await.map_err(internal_error)?;
         created_items += 1;
     }
 
-    let row_count = input.rows.len();
-    let batch_id = if row_count > 0 {
-        let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO inventory_movement_import_batches (id,warehouse_id,submitted_by,submitted_email,source_name,row_count) VALUES ($1,$2,$3,$4,$5,$6)")
-            .bind(id).bind(&warehouse_id).bind(&user.id).bind(&user.email).bind(input.source_name.trim()).bind(row_count as i32)
-            .execute(&mut *transaction).await.map_err(internal_error)?;
-        Some(id)
-    } else {
-        None
-    };
     let mut duplicate_movements = Vec::new();
     for (row_index, row) in input.rows.into_iter().enumerate() {
         let source_row = row.source_row.unwrap_or(row_index + 2);
         if !matches!(
             row.movement_type.as_str(),
-            "inbound" | "outbound" | "adjustment"
+            "inbound" | "outbound" | "adjustment" | "vision_estimate"
         ) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!(
-                    "{}행: 거래 유형 '{}'은 inbound, outbound, adjustment 중 하나여야 합니다.",
+                    "{}행: 거래 유형 '{}'은 inbound, outbound, adjustment, vision_estimate 중 하나여야 합니다.",
                     source_row, row.movement_type
                 ),
             ));
@@ -1310,24 +1339,19 @@ async fn submit_movement_import(
             ));
         }
         let item = if let Some(item_id) = row.inventory_item_id {
-            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL")
-                .bind(item_id).bind(&warehouse_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
+            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size,pallet_unit,pallet_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND (archived_at IS NULL OR pending_batch_id=$3)")
+                .bind(item_id).bind(&warehouse_id).bind(batch_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
         } else if let Some(item_name) = row.item_name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size FROM inventory_items WHERE warehouse_id=$1 AND lower(name)=lower($2) AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1")
-                .bind(&warehouse_id).bind(item_name).fetch_optional(&mut *transaction).await.map_err(internal_error)?
+            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size,pallet_unit,pallet_size FROM inventory_items WHERE warehouse_id=$1 AND lower(name)=lower($2) AND (archived_at IS NULL OR pending_batch_id=$3) ORDER BY (pending_batch_id IS NULL), created_at DESC LIMIT 1")
+                .bind(&warehouse_id).bind(item_name).bind(batch_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
         } else { None }
             .ok_or_else(|| (StatusCode::BAD_REQUEST, "inventory item is unavailable in this warehouse".to_string()))?;
         let entered_unit = row.quantity_unit.as_deref().unwrap_or(&item.2);
-        let multiplier = if entered_unit == item.2 {
-            Decimal::ONE
-        } else if item.3.as_deref() == Some(entered_unit) {
-            item.4
-        } else {
-            return Err((
+        let multiplier = unit_multiplier(entered_unit, &item.2, item.3.as_deref(), item.4, item.5.as_deref(), item.6)
+            .ok_or_else(|| (
                 StatusCode::BAD_REQUEST,
                 format!("unit '{}' does not match item '{}'", entered_unit, item.1),
-            ));
-        };
+            ))?;
         let magnitude = row.quantity.abs() * multiplier;
         let delta = match row.movement_type.as_str() {
             "inbound" => magnitude,
@@ -1355,7 +1379,7 @@ async fn submit_movement_import(
             }));
         }
         sqlx::query("INSERT INTO inventory_movement_import_rows (batch_id,inventory_item_id,item_name,occurred_at,movement_type,quantity_delta,note,reference) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(batch_id.unwrap()).bind(item.0).bind(item.1).bind(row.occurred_at).bind(row.movement_type).bind(delta).bind(row.note.trim()).bind(row.reference.unwrap_or_default())
+            .bind(batch_id).bind(item.0).bind(item.1).bind(row.occurred_at).bind(row.movement_type).bind(delta).bind(row.note.trim()).bind(row.reference.unwrap_or_default())
             .execute(&mut *transaction).await.map_err(internal_error)?;
     }
     if !input.allow_duplicates && !duplicate_movements.is_empty() {
@@ -1370,7 +1394,7 @@ async fn submit_movement_import(
     Ok((
         StatusCode::ACCEPTED,
         Json(
-            serde_json::json!({"batchId":batch_id,"status":if batch_id.is_some(){"PENDING"}else{"IMPORTED"},"rows":row_count,"createdItems":created_items}),
+            serde_json::json!({"batchId":batch_id,"status":"PENDING","rows":row_count,"createdItems":created_items}),
         ),
     ))
 }
@@ -1383,10 +1407,26 @@ async fn list_inventory_ledger(
     let warehouse_id = query
         .warehouse_id
         .unwrap_or_else(|| "wh_wjmals".to_string());
-    let limit = query.days.unwrap_or(90).clamp(1, 365) as i64 * 50;
+    let limit = query.limit.unwrap_or(2000).clamp(1, 20000);
+    let days = query.days.map(|value| value.clamp(1, 3650));
+    let operator = query.operator.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let system_only = operator == Some("시스템");
+    let operator = operator.filter(|_| !system_only);
+    let source = query.source.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let movement_type = query.movement_type.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let item = query.item.as_deref().map(str::trim).filter(|value| !value.is_empty());
     let rows = sqlx::query_as::<_, (Uuid, String, String, Decimal, Decimal, String, String, Option<String>, DateTime<Utc>)>(
-        "SELECT id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_email,created_at FROM inventory_movements WHERE warehouse_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2",
-    ).bind(warehouse_id).bind(limit).fetch_all(&db).await.map_err(internal_error)?;
+        "SELECT id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_email,created_at FROM inventory_movements
+          WHERE warehouse_id=$1
+            AND ($3::int IS NULL OR created_at >= now() - ($3::int * interval '1 day'))
+            AND ($4::text IS NULL OR actor_email ILIKE '%' || $4 || '%')
+            AND (NOT $5::bool OR actor_email IS NULL)
+            AND ($6::text IS NULL OR source ILIKE $6 || '%')
+            AND ($7::text IS NULL OR movement_type = $7)
+            AND ($8::text IS NULL OR item_name ILIKE '%' || $8 || '%')
+          ORDER BY created_at DESC,id DESC LIMIT $2",
+    ).bind(warehouse_id).bind(limit).bind(days).bind(operator).bind(system_only).bind(source).bind(movement_type).bind(item)
+        .fetch_all(&db).await.map_err(internal_error)?;
     Ok(Json(rows.into_iter().map(|row| serde_json::json!({"id":row.0,"itemName":row.1,"movementType":row.2,"quantityDelta":row.3,"balanceAfter":row.4,"reason":row.5,"source":row.6,"operator":row.7,"occurredAt":row.8})).collect()))
 }
 
@@ -1461,6 +1501,23 @@ async fn review_movement_import(
             "관리자 반려"
         });
     if input.approve {
+        let pending_items = sqlx::query_as::<_, (Uuid, String, Decimal, Decimal, String)>("SELECT id,name,current,safe,unit FROM inventory_items WHERE pending_batch_id=$1 FOR UPDATE")
+            .bind(input.id).fetch_all(&mut *transaction).await.map_err(internal_error)?;
+        for (item_id, item_name, current, safe, unit) in pending_items {
+            sqlx::query("UPDATE inventory_items SET archived_at=NULL,pending_batch_id=NULL,updated_at=now() WHERE id=$1")
+                .bind(item_id).execute(&mut *transaction).await.map_err(|error| {
+                    if error.as_database_error().is_some_and(|db_error| db_error.is_unique_violation()) {
+                        (StatusCode::CONFLICT, format!("'{}' 품목의 바코드가 이미 다른 품목에 사용 중이라 승인할 수 없습니다.", item_name))
+                    } else { internal_error(error) }
+                })?;
+            sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email) VALUES ($1,$2,$3,'initial',$4,$4,'Excel initial stock','historical_import',$5,$6)")
+                .bind(&batch.0).bind(item_id).bind(&item_name).bind(current).bind(&user.id).bind(&user.email)
+                .execute(&mut *transaction).await.map_err(internal_error)?;
+            sqlx::query("INSERT INTO inventory_audit_events (warehouse_id,actor_id,actor_email,action,entity_type,entity_id,after_data,reason,source) VALUES ($1,$2,$3,'create','inventory_item',$4,$5,'Excel initial stock','historical_import')")
+                .bind(&batch.0).bind(&user.id).bind(&user.email).bind(item_id.to_string())
+                .bind(serde_json::json!({"name":item_name,"current":current,"safe":safe,"unit":unit}))
+                .execute(&mut *transaction).await.map_err(internal_error)?;
+        }
         let rows = sqlx::query_as::<_, (Uuid, String, DateTime<Utc>, String, Decimal, String, String)>("SELECT inventory_item_id,item_name,occurred_at,movement_type,quantity_delta,note,reference FROM inventory_movement_import_rows WHERE batch_id=$1 ORDER BY inventory_item_id,occurred_at,id")
             .bind(input.id).fetch_all(&mut *transaction).await.map_err(internal_error)?;
         let mut grouped: std::collections::BTreeMap<
@@ -1730,24 +1787,50 @@ fn safety_stock_data_is_eligible(completed_days: usize, recent_outbound_days: us
     completed_days >= 35 && recent_outbound_days >= 5
 }
 
+fn unit_multiplier(
+    entered: &str,
+    unit: &str,
+    package_unit: Option<&str>,
+    package_size: Decimal,
+    pallet_unit: Option<&str>,
+    pallet_size: Decimal,
+) -> Option<Decimal> {
+    if entered == unit {
+        Some(Decimal::ONE)
+    } else if package_unit == Some(entered) {
+        Some(package_size)
+    } else if pallet_unit == Some(entered) {
+        Some(pallet_size)
+    } else {
+        None
+    }
+}
+
 fn classify_stock(
     current: Decimal,
     safe: Decimal,
     unit: &str,
 ) -> (&'static str, &'static str, String, &'static str) {
     let diff = current - safe;
-    if current < safe * Decimal::new(5, 1) {
+    if safe <= Decimal::ZERO {
+        (
+            "safe",
+            "안전재고 미설정",
+            "안전재고 기준 미설정".to_string(),
+            "안전재고를 설정하면 부족/과다 상태를 판정합니다",
+        )
+    } else if current < safe * Decimal::new(5, 1) {
         (
             "shortage",
             "재고 부족",
-            format!("부족분: {diff}{unit}"),
+            format!("부족분: {}{unit}", diff.round_dp(2).normalize()),
             "재고 하한선 이탈 -> 즉시 추가 발주 필요",
         )
     } else if current > safe * Decimal::from(2u32) {
         (
             "overstock",
             "재고 과다",
-            format!("초과분: +{diff}{unit}"),
+            format!("초과분: +{}{unit}", diff.round_dp(2).normalize()),
             "창고 점유율 초과 -> 출하량 증대 필요",
         )
     } else {
@@ -2492,6 +2575,7 @@ async fn list_zones(
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|value| value.as_str().map(str::to_owned))
+                .filter(|item| inventory.iter().any(|(name, _, _)| name.eq_ignore_ascii_case(item)))
                 .collect::<Vec<_>>();
             let current_stock_sum = inventory
                 .iter()
@@ -2510,7 +2594,7 @@ async fn list_zones(
                 state: state.to_string(),
                 state_label: state_label.to_string(),
                 temp: row.5,
-                items: row.6,
+                items: Value::from(assigned),
                 capacity,
                 capacity_unit: row.8,
                 current_stock_sum,
@@ -3220,19 +3304,15 @@ async fn review_vision_estimate(
                 "승인할 재고 품목을 선택해야 합니다.".to_string(),
             )
         })?;
-        let item = sqlx::query_as::<_, (String, Decimal, Decimal, String, Option<String>, Decimal)>("SELECT name,current,safe,unit,package_unit,package_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL FOR UPDATE")
+        let item = sqlx::query_as::<_, (String, Decimal, Decimal, String, Option<String>, Decimal, Option<String>, Decimal)>("SELECT name,current,safe,unit,package_unit,package_size,pallet_unit,pallet_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND archived_at IS NULL FOR UPDATE")
             .bind(item_id).bind(&estimate.0).fetch_optional(&mut *transaction).await.map_err(internal_error)?
             .ok_or_else(|| (StatusCode::NOT_FOUND, "활성 재고 품목을 찾을 수 없습니다.".to_string()))?;
-        let quantity = if estimate.4 == item.3 {
-            estimate.3
-        } else if item.4.as_deref() == Some(estimate.4.as_str()) {
-            estimate.3 * item.5
-        } else {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "비전 단위가 품목의 기준/포장 단위와 일치하지 않습니다.".to_string(),
-            ));
-        };
+        let quantity = estimate.3
+            * unit_multiplier(&estimate.4, &item.3, item.4.as_deref(), item.5, item.6.as_deref(), item.7)
+                .ok_or_else(|| (
+                    StatusCode::BAD_REQUEST,
+                    "비전 단위가 품목의 기준/포장/파렛 단위와 일치하지 않습니다.".to_string(),
+                ))?;
         let (status, status_label, diff_text, recommendation) =
             classify_stock(quantity, item.2, &item.3);
         sqlx::query("UPDATE inventory_items SET current=$1,status=$2,status_label=$3,diff_text=$4,recommendation=$5,updated_at=now() WHERE id=$6")

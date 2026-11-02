@@ -9,6 +9,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import InventoryDataTools from '../../components/InventoryDataTools';
 import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
+import { formatQty, formatDiffText } from '../../lib/formatQuantity';
+
+const UNSET_LABEL = '안전재고 미설정';
+const FILTER_TO_STATUS: Record<string, string> = { '재고 부족': 'shortage', '안전 재고': 'safe', '재고 과다': 'overstock' };
 
 async function readApiResponse<T>(response: Response, fallback: string): Promise<T & { error?: string }> {
   const text = await response.text();
@@ -42,12 +46,12 @@ export default function InventoryReportPage() {
   const { user } = useAuth();
   const isWarehouseAdmin = user?.role === '관리자' || user?.role === '총괄';
   const canRegisterInventory = isWarehouseAdmin || user?.role === '창고지기';
-  const [data, setData] = useState<InventoryItem[]>([]);
+  const [allData, setAllData] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState('전체');
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
-  const [addForm, setAddForm] = useState({ name: '', current: '', safe: '', unit: '톤', packageUnit: '', packageSize: '1', cycle: '월간' });
+  const [addForm, setAddForm] = useState({ name: '', current: '', safe: '', unit: 'ea', packageUnit: '', packageSize: '1', palletUnit: '', palletSize: '1', cycle: '월간' });
   const [adding, setAdding] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
 
@@ -65,18 +69,16 @@ export default function InventoryReportPage() {
     try {
       const params = new URLSearchParams();
       params.set('warehouseId', user?.warehouseId || 'wh_wjmals');
-      if (search) params.set('search', search);
-      if (activeFilter !== '전체') params.set('status', activeFilter);
       const res = await fetch(`/api/inventory?${params.toString()}`);
       if (!res.ok) throw new Error(`재고 조회에 실패했습니다 (${res.status}).`);
       const json = await res.json();
-      setData(Array.isArray(json) ? normalizeApiNumbers(json) : []);
+      setAllData(Array.isArray(json) ? normalizeApiNumbers(json) : []);
     } catch (e) {
       console.error(e);
     } finally {
       if (!isSilent) setLoading(false);
     }
-  }, [search, activeFilter, user?.warehouseId]);
+  }, [user?.warehouseId]);
 
   useEffect(() => {
     fetchData(false);
@@ -90,7 +92,7 @@ export default function InventoryReportPage() {
 
   // 새 항목 추가
   const handleAdd = async () => {
-    if (!addForm.name.trim() || addForm.current === '' || addForm.safe === '' || Number(addForm.packageSize) <= 0) return;
+    if (!addForm.name.trim() || addForm.current === '' || addForm.safe === '' || Number(addForm.packageSize) <= 0 || Number(addForm.palletSize) <= 0) return;
     setAdding(true);
     try {
       const res = await fetch('/api/inventory', {
@@ -100,9 +102,11 @@ export default function InventoryReportPage() {
           name: addForm.name,
           current: Number(addForm.current),
           safe: Number(addForm.safe),
-          unit: addForm.unit.trim(),
+          unit: addForm.unit.trim() || 'ea',
           packageUnit: addForm.packageUnit.trim() || undefined,
-          packageSize: Number(addForm.packageSize),
+          packageSize: Number(addForm.packageSize) || 1,
+          palletUnit: addForm.palletUnit.trim() || undefined,
+          palletSize: Number(addForm.palletSize) || 1,
           note: '초기 재고 등록',
           cycle: addForm.cycle,
           warehouseId: user?.warehouseId,
@@ -112,7 +116,7 @@ export default function InventoryReportPage() {
         const errorData = await res.json().catch(() => null);
         throw new Error(errorData?.error || '재고 항목 추가에 실패했습니다.');
       }
-      setAddForm({ name: '', current: '', safe: '', unit: '톤', packageUnit: '', packageSize: '1', cycle: '월간' });
+      setAddForm({ name: '', current: '', safe: '', unit: 'ea', packageUnit: '', packageSize: '1', palletUnit: '', palletSize: '1', cycle: '월간' });
       setShowAddForm(false);
       await fetchData();
     } catch (e) {
@@ -152,7 +156,6 @@ export default function InventoryReportPage() {
         body: JSON.stringify({
           id: selectedReportItem.id,
           warehouseId: user?.warehouseId || 'wh_wjmals',
-          current: selectedReportItem.current,
           safe,
           safetyStockMode: 'manual',
           movementType: 'adjustment',
@@ -163,7 +166,7 @@ export default function InventoryReportPage() {
       const result = await readApiResponse<InventoryItem>(response, '안전재고를 저장하지 못했습니다.');
       if (!response.ok) throw new Error(result.error || '안전재고를 저장하지 못했습니다.');
       setSelectedReportItem(result);
-      setData((current) => current.map((item) => item.id === result.id ? result : item));
+      setAllData((current) => current.map((item) => item.id === result.id ? result : item));
       await fetchData(true);
     } catch (error) {
       alert(error instanceof Error ? error.message : '안전재고를 저장하지 못했습니다.');
@@ -190,7 +193,7 @@ export default function InventoryReportPage() {
       if (!response.ok) throw new Error(result.error || '안전재고 모드를 바꾸지 못했습니다.');
       setSelectedReportItem(result);
       setSafeStockDraft(String(result.safe));
-      setData((current) => current.map((item) => item.id === result.id ? result : item));
+      setAllData((current) => current.map((item) => item.id === result.id ? result : item));
       await fetchData(true);
     } catch (error) {
       alert(error instanceof Error ? error.message : '안전재고 모드를 바꾸지 못했습니다.');
@@ -199,19 +202,32 @@ export default function InventoryReportPage() {
     }
   };
 
+  const isUnset = (item: InventoryItem) => item.safe <= 0 || item.statusLabel === UNSET_LABEL;
+  const effectiveStatus = (item: InventoryItem) => (isUnset(item) ? 'unset' : item.status);
+  const searchKey = search.trim().toLowerCase();
+  const data = allData.filter((item) => {
+    if (activeFilter === '미설정') {
+      if (!isUnset(item)) return false;
+    } else if (activeFilter !== '전체' && effectiveStatus(item) !== FILTER_TO_STATUS[activeFilter]) {
+      return false;
+    }
+    return !searchKey || item.name.toLowerCase().includes(searchKey) || item.id.toLowerCase().includes(searchKey);
+  });
+
   // Summarize the current database values without implying an AI forecast.
   const openInventorySummary = () => {
     if (loading) return;
     setShowSummaryModal(true);
-    const shortage = data.filter((item) => item.status === 'shortage');
-    const overstock = data.filter((item) => item.status === 'overstock');
-    const safe = data.filter((item) => item.status === 'safe');
+    const shortage = allData.filter((item) => effectiveStatus(item) === 'shortage');
+    const overstock = allData.filter((item) => effectiveStatus(item) === 'overstock');
+    const safe = allData.filter((item) => effectiveStatus(item) === 'safe');
+    const unset = allData.filter(isUnset);
     const listItems = (items: InventoryItem[]) => items.length
-      ? items.map((item) => `- ${item.name}: 현재 ${item.current.toLocaleString()}${item.unit} / 안전 ${item.safe.toLocaleString()}${item.unit}`).join('\n')
+      ? items.map((item) => `- ${item.name}: 현재 ${formatQty(item.current)}${item.unit} / 안전 ${formatQty(item.safe)}${item.unit}`).join('\n')
       : '- 해당 품목 없음';
     setSummaryContent([
-      `현재 조회 품목: ${data.length}건`,
-      `부족 ${shortage.length}건 · 적정 ${safe.length}건 · 과다 ${overstock.length}건`,
+      `전체 품목: ${allData.length}건`,
+      `부족 ${shortage.length}건 · 적정 ${safe.length}건 · 과다 ${overstock.length}건 · 안전재고 미설정 ${unset.length}건`,
       '',
       '부족 품목',
       listItems(shortage),
@@ -223,15 +239,17 @@ export default function InventoryReportPage() {
     ].join('\n'));
   };
 
-  const shortageCount = data.filter(i => i.status === 'shortage').length;
-  const overstockCount = data.filter(i => i.status === 'overstock').length;
-  const safeCount = data.filter(i => i.status === 'safe').length;
+  const shortageCount = allData.filter(i => effectiveStatus(i) === 'shortage').length;
+  const overstockCount = allData.filter(i => effectiveStatus(i) === 'overstock').length;
+  const safeCount = allData.filter(i => effectiveStatus(i) === 'safe').length;
+  const unsetCount = allData.filter(isUnset).length;
 
   const filterOptions = [
-    { label: '전체', value: '전체' },
+    { label: `전체 (${allData.length})`, value: '전체' },
     { label: `🔴 재고 부족 (${shortageCount})`, value: '재고 부족' },
     { label: `🟢 안전 재고 (${safeCount})`, value: '안전 재고' },
     { label: `🟡 재고 과다 (${overstockCount})`, value: '재고 과다' },
+    { label: `⚪ 안전재고 미설정 (${unsetCount})`, value: '미설정' },
   ];
 
   return (
@@ -299,7 +317,7 @@ export default function InventoryReportPage() {
                 <label className="text-xs font-semibold text-textMuted mb-1 block">현재 재고량 ({addForm.unit || '단위'}) *</label>
                 <input
                   type="number"
-                  step="0.000001"
+                  step="any"
                   min="0"
                   placeholder="예: 3500"
                   value={addForm.current}
@@ -311,7 +329,7 @@ export default function InventoryReportPage() {
                 <label className="text-xs font-semibold text-textMuted mb-1 block">안전재고 기준 ({addForm.unit || '단위'}) *</label>
                 <input
                   type="number"
-                  step="0.000001"
+                  step="any"
                   min="0"
                   placeholder="예: 10000"
                   value={addForm.safe}
@@ -324,12 +342,20 @@ export default function InventoryReportPage() {
                 <input required maxLength={16} value={addForm.unit} onChange={(event) => setAddForm((form) => ({ ...form, unit: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
               </div>
               <div>
-                <label className="text-xs font-semibold text-textMuted mb-1 block">포장 단위 (선택)</label>
-                <input maxLength={16} placeholder="예: 포대" value={addForm.packageUnit} onChange={(event) => setAddForm((form) => ({ ...form, packageUnit: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
+                <label className="text-xs font-semibold text-textMuted mb-1 block">박스 단위 (선택)</label>
+                <input maxLength={16} placeholder="예: 박스" value={addForm.packageUnit} onChange={(event) => setAddForm((form) => ({ ...form, packageUnit: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
               </div>
               <div>
-                <label className="text-xs font-semibold text-textMuted mb-1 block">포장당 기준 수량</label>
-                <input type="number" min="0.000001" step="0.000001" value={addForm.packageSize} onChange={(event) => setAddForm((form) => ({ ...form, packageSize: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
+                <label className="text-xs font-semibold text-textMuted mb-1 block">박스당 {addForm.unit || '기본단위'} 수</label>
+                <input type="number" min="0" step="any" value={addForm.packageSize} onChange={(event) => setAddForm((form) => ({ ...form, packageSize: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-textMuted mb-1 block">파렛 단위 (선택)</label>
+                <input maxLength={16} placeholder="예: 파렛트" value={addForm.palletUnit} onChange={(event) => setAddForm((form) => ({ ...form, palletUnit: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-textMuted mb-1 block">파렛당 {addForm.unit || '기본단위'} 수</label>
+                <input type="number" min="0" step="any" value={addForm.palletSize} onChange={(event) => setAddForm((form) => ({ ...form, palletSize: event.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm" />
               </div>
             </div>
             <div className="flex gap-2 justify-end">
@@ -417,8 +443,8 @@ export default function InventoryReportPage() {
           </div>
         ) : (
           data.map((item, idx) => {
-            const isShortage = item.status === 'shortage';
-            const isOverstock = item.status === 'overstock';
+            const isShortage = effectiveStatus(item) === 'shortage';
+            const isOverstock = effectiveStatus(item) === 'overstock';
             const statusColor = isShortage ? 'text-red-600' : isOverstock ? 'text-amber-600' : 'text-green-600';
             const statusBg = isShortage ? 'bg-red-50 text-red-700 border-red-200' : isOverstock ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-green-50 text-green-700 border-green-200';
 
@@ -442,16 +468,16 @@ export default function InventoryReportPage() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-mono font-bold text-primary">{item.id}</span>
                       <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full border ${statusBg}`}>
-                        ● {item.statusLabel}
+                        ● {isUnset(item) ? UNSET_LABEL : item.statusLabel}
                       </span>
                     </div>
                     <h3 className="text-lg font-bold text-textMain dark:text-white break-keep">
                       {item.name}
                     </h3>
                     <div className="text-xs text-textMuted flex flex-wrap items-center gap-x-3 gap-y-1 mt-0.5">
-                      <span>현재: <strong className="text-textMain dark:text-gray-200 font-bold">{item.current.toLocaleString()} {item.unit}</strong></span>
-                      <span>안전기준: {item.safe.toLocaleString()} {item.unit}</span>
-                      <span className={`font-semibold ${statusColor}`}>({item.diffText})</span>
+                      <span>현재: <strong className="text-textMain dark:text-gray-200 font-bold">{formatQty(item.current)} {item.unit}</strong></span>
+                      <span>안전기준: {formatQty(item.safe)} {item.unit}</span>
+                      <span className={`font-semibold ${statusColor}`}>({formatDiffText(item.diffText)})</span>
                     </div>
                   </div>
                 </div>
@@ -514,14 +540,14 @@ export default function InventoryReportPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-gray-900 rounded-3xl max-w-xl w-full p-6 md:p-8 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-6"
+              className="bg-white dark:bg-gray-900 rounded-3xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-5 md:p-8 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-6"
             >
               <div className="flex justify-between items-start border-b border-gray-100 dark:border-gray-800 pb-4">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs font-mono font-bold text-primary">{selectedReportItem.id}</span>
                     <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-50 text-primary font-bold">
-                      {selectedReportItem.statusLabel}
+                      {isUnset(selectedReportItem) ? UNSET_LABEL : selectedReportItem.statusLabel}
                     </span>
                   </div>
                   <h2 className="text-2xl font-extrabold text-textMain dark:text-white">
@@ -540,7 +566,7 @@ export default function InventoryReportPage() {
               <div className="bg-gray-50 dark:bg-gray-800/60 p-5 rounded-2xl space-y-3">
                 <div className="flex justify-between items-center text-sm font-bold">
                   <span className="text-textMuted">현재 보관량 vs 안전 기준치</span>
-                  <span className="text-primary">{selectedReportItem.diffText}</span>
+                  <span className="text-primary">{formatDiffText(selectedReportItem.diffText)}</span>
                 </div>
                 <div className="w-full bg-gray-200 dark:bg-gray-700 h-3 rounded-full overflow-hidden flex">
                   <div 
@@ -549,8 +575,8 @@ export default function InventoryReportPage() {
                   />
                 </div>
                 <div className="flex justify-between text-xs text-textMuted">
-                  <span>현재 재고: <strong>{selectedReportItem.current.toLocaleString()} 톤</strong></span>
-                  <span>안전 기준: <strong>{selectedReportItem.safe.toLocaleString()} 톤</strong></span>
+                  <span>현재 재고: <strong>{formatQty(selectedReportItem.current)} {selectedReportItem.unit}</strong></span>
+                  <span>안전 기준: <strong>{formatQty(selectedReportItem.safe)} {selectedReportItem.unit}</strong></span>
                 </div>
               </div>
 
@@ -569,11 +595,11 @@ export default function InventoryReportPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h4 className="text-sm font-bold">안전재고 설정</h4>
-                    <p className="text-xs text-textMuted">현재 {selectedReportItem.safe.toLocaleString()} {selectedReportItem.unit} · {selectedReportItem.safetyStockMode === 'auto' ? '자동 계산 사용 중' : '수동 설정 사용 중'}</p>
+                    <p className="text-xs text-textMuted">현재 {formatQty(selectedReportItem.safe)} {selectedReportItem.unit} · {selectedReportItem.safetyStockMode === 'auto' ? '자동 계산 사용 중' : '수동 설정 사용 중'}</p>
                   </div>
                   {selectedReportItem.safetyStockMode === 'auto' ? <button disabled={savingSafetyStock} onClick={() => void setSafetyStockMode('manual')} className="rounded border border-gray-300 px-3 py-2 text-xs font-semibold disabled:opacity-50">수동 설정으로 전환</button> : <button disabled={savingSafetyStock} onClick={() => void setSafetyStockMode('auto')} className="rounded border border-primary px-3 py-2 text-xs font-semibold text-primary disabled:opacity-50">자동 계산으로 전환</button>}
                 </div>
-                {selectedReportItem.safetyStockMode === 'manual' && <div className="flex flex-wrap items-end gap-2"><label className="text-xs">수동 안전재고 ({selectedReportItem.unit})<input type="number" min="0" step="0.000001" value={safeStockDraft} onChange={(event) => setSafeStockDraft(event.target.value)} className="mt-1 block w-40 rounded border border-gray-300 bg-white px-2 py-2 text-gray-900" /></label><button disabled={savingSafetyStock} onClick={() => void saveManualSafetyStock()} className="rounded bg-primary px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{savingSafetyStock ? '저장 중...' : '수동 값 저장'}</button></div>}
+                {selectedReportItem.safetyStockMode === 'manual' && <div className="flex flex-wrap items-end gap-2"><label className="text-xs">수동 안전재고 ({selectedReportItem.unit})<input type="number" min="0" step="any" value={safeStockDraft} onChange={(event) => setSafeStockDraft(event.target.value)} className="mt-1 block w-40 rounded border border-gray-300 bg-white px-2 py-2 text-gray-900" /></label><button disabled={savingSafetyStock} onClick={() => void saveManualSafetyStock()} className="rounded bg-primary px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{savingSafetyStock ? '저장 중...' : '수동 값 저장'}</button></div>}
                 {selectedReportItem.safetyStockMode === 'auto' && <label className="text-xs">조달 리드타임 (일)<input type="number" min="1" max="60" step="1" value={leadTimeDraft} onChange={(event) => setLeadTimeDraft(event.target.value)} className="mt-1 block w-32 rounded border border-gray-300 bg-white px-2 py-2 text-gray-900" /><button disabled={savingSafetyStock} onClick={() => void setSafetyStockMode('auto')} className="mt-2 rounded bg-primary px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">리드타임 및 추천값 저장</button></label>}
                 <p className="text-xs leading-relaxed text-textMuted">자동 계산은 외부 AI 모델이 아닌 출고 이력 기반 통계식입니다. 완료일 35일 이상 및 출고 기록일 5일 이상일 때 활성화됩니다. 안전재고 = Z × 최근 28일 일별 출고 표준편차 × √리드타임. 기본 서비스 수준 95%에서 Z=1.645이며, 새 출고 기록 때 추천값을 갱신합니다. 언제든 수동 모드로 전환해 직접 입력할 수 있습니다.</p>
               </div>
@@ -619,7 +645,7 @@ export default function InventoryReportPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-gray-900 rounded-3xl max-w-2xl w-full p-6 md:p-8 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-5"
+              className="bg-white dark:bg-gray-900 rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-5 md:p-8 shadow-2xl border border-gray-100 dark:border-gray-800 space-y-5"
             >
               <div className="flex justify-between items-center pb-4 border-b border-gray-100 dark:border-gray-800">
                 <div className="flex items-center gap-2">

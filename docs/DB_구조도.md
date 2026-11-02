@@ -86,9 +86,12 @@ erDiagram
 | `name` | text | 품목명 |
 | `barcode` | text, nullable | 카메라 또는 리더기에서 판독하는 SKU/바코드. 창고 내 중복은 허용되지 않는다. |
 | `current`, `safe` | numeric(20,6) | 기준 단위의 현재 수량과 안전재고. 둘 다 0 이상 |
-| `unit` | text | 기준 단위 |
-| `package_unit` | text, nullable | 선택 포장 단위 |
-| `package_size` | numeric(20,6) | 한 포장의 기준 단위 수량, 0 초과 |
+| `unit` | text | 기본 단위(기본값 `ea`) |
+| `package_unit` | text, nullable | 선택 박스 단위 |
+| `package_size` | numeric(20,6) | 박스 하나의 기본 단위 수량, 0 초과 |
+| `pallet_unit` | text, nullable | 선택 파렛트 단위 |
+| `pallet_size` | numeric(20,6) | 파렛트 하나의 기본 단위 수량, 0 초과 |
+| `pending_batch_id` | uuid, nullable | 엑셀 가져오기 승인 대기 배치. 승인 전 품목은 `archived_at`이 설정되어 숨겨진다 |
 | `archived_at` | timestamptz, nullable | 논리 보관 시각. 보관 품목은 일반 조회에서 제외 |
 | `status`, `status_label` | text | 상태 코드와 화면 표시 라벨 |
 | `diff_text`, `recommendation` | text | 차이 표시와 조치 권고 |

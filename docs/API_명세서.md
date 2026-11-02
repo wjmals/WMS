@@ -209,15 +209,17 @@ Rust API의 성공 응답에는 `token`이 포함된다. Next.js 브라우저 �
   "barcode": "8801234567890",
   "current": 120.5,
   "safe": 100.25,
-  "unit": "kg",
-  "packageUnit": "상자",
-  "packageSize": 12.5,
+  "unit": "ea",
+  "packageUnit": "박스",
+  "packageSize": 12,
+  "palletUnit": "파렛트",
+  "palletSize": 480,
   "note": "초기 실사 등록",
   "cycle": "월간"
 }
 ```
 
-`201`을 반환한다. 수량은 `NUMERIC(20,6)` 소수이며 잔량과 안전재고는 0 이상이어야 한다. `unit`은 기준 단위, `packageUnit`은 선택 포장 단위, `packageSize`는 포장 하나에 해당하는 기준 단위 수량이다. 선택 필드 `barcode`는 창고 내에서 고유하다. 초기 수량은 담당자·출처·사유와 함께 `initial` 장부 및 감사 이벤트로 기록된다.
+`201`을 반환한다. 수량은 `NUMERIC(20,6)` 소수이며 잔량과 안전재고는 0 이상이어야 한다. `unit`은 기본 단위(생략 시 `ea`), `packageUnit`/`packageSize`는 선택 박스 단위와 박스 하나에 해당하는 기본 단위 수량, `palletUnit`/`palletSize`는 선택 파렛트 단위와 파렛트 하나에 해당하는 기본 단위 수량이다. 선택 필드 `barcode`는 창고 내에서 고유하다. 초기 수량은 담당자·출처·사유와 함께 `initial` 장부 및 감사 이벤트로 기록된다.
 
 ### `PATCH /api/inventory`
 
@@ -234,11 +236,11 @@ Rust API의 성공 응답에는 `token`이 포함된다. Next.js 브라우저 �
 }
 ```
 
-`quantity`/`quantityUnit` 입력은 기준 단위나 등록된 포장 단위여야 한다. 포장 입력은 `packageSize`로 기준 단위에 환산한다. 기존 클라이언트 호환을 위해 새 절대 잔량 `current` 방식도 받을 수 있다. `movementType`은 증감 부호와 일치해야 한다. 사유는 필수다. 서버는 잔량·상태·장부·감사 이벤트를 한 트랜잭션으로 저장한다.
+`quantity`/`quantityUnit` 입력은 기본 단위, 박스 단위, 파렛트 단위 중 하나여야 하며 등록된 `packageSize`/`palletSize`로 기본 단위에 환산한다. `safe`만 보내면 수량 변동 없이 안전재고만 저장한다. 안전재고가 0이면 상태는 `안전재고 미설정`(코드 `safe`)이다. 기존 클라이언트 호환을 위해 새 절대 잔량 `current` 방식도 받을 수 있다. `movementType`은 증감 부호와 일치해야 한다. 사유는 필수다. 서버는 잔량·상태·장부·감사 이벤트를 한 트랜잭션으로 저장한다.
 
 ### `DELETE /api/inventory?id=<uuid>&warehouseId=<id>`
 
-물리 삭제가 아니라 보관 처리다. 선택 쿼리 `reason`에 보관 사유를 전달한다. `archived_at`을 설정하고 담당자/사유 감사 이벤트를 기록하며 해당 품목의 장부는 보존된다.
+물리 삭제가 아니라 보관 처리다. 선택 쿼리 `reason`에 보관 사유를 전달한다. `archived_at`을 설정하고 남은 수량이 있으면 `adjustment`(출처 `archive`) 장부로 전량 감소를 기록하며, 담당자/사유 감사 이벤트를 남긴다. 해당 품목의 장부는 보존되고 `GET /api/zones`의 구역 배치 목록에서는 보관 품목이 제외된다.
 
 ### `GET /api/inventory/movements?warehouseId=<id>&days=30`
 
@@ -262,13 +264,13 @@ $$안전재고 = Z \times \sigma_{28일\ 일별\ 출고량} \times \sqrt{리드�
 
 응답의 전체 `mapePct`는 품목별 비영 출고 검증일 수로 가중한 값이다. `accuracyPct`는 UI 참고용 `max(0, 100 - MAPE)` 변환치이며 정확도 보증이 아니다. `targetMet`은 92% 기준을 참고로 평가한다. 품절률은 재고가 없어 미충족된 주문/수요가 DB에 기록되지 않으므로 항상 `null`이며 `stockoutMetricStatus`는 `not_measurable`이다. 출고량 기준선은 실제 수요 예측이나 발주 권고를 뜻하지 않는다.
 
-### `GET /api/inventory/ledger?warehouseId=<id>&days=90`
+### `GET /api/inventory/ledger?warehouseId=<id>`
 
-감사 확인용 원시 장부를 최근 순으로 반환한다. 행에는 품목, 변동 유형, 소수 증감량, 변경 후 잔량, 담당자, 출처, 사유, 발생 시각이 포함된다. `days`는 조회 한도를 정하는 1~365일 값이다.
+감사 확인용 원시 장부를 최근 순으로 반환한다. 행에는 품목, 변동 유형, 소수 증감량, 변경 후 잔량, 담당자, 출처, 사유, 발생 시각이 포함된다. 선택 쿼리: `limit`(기본 2000, 최대 20000), `days`(생략 시 기간 제한 없음), `operator`(담당자 이메일 부분 일치, `시스템`은 담당자 없음), `source`(접두 일치), `movementType`, `item`(품목명 부분 일치).
 
 ### `POST /api/inventory/import`
 
-과거 거래 배치를 검증하고 승인 대기로 저장한다. `warehouseId`, `sourceName`, `rows`를 받는다. 한 요청은 1~5,000행이며 행마다 `inventoryItemId`, 과거 `occurredAt`, `movementType`, `quantity`, 선택 `quantityUnit`, 필수 `note`, 선택 `reference`가 필요하다. 기준 단위/포장 단위를 환산하되 현재 잔량은 변경하지 않는다. 응답은 `202`와 `batchId`, `PENDING`을 반환한다.
+과거 거래 배치를 검증하고 승인 대기로 저장한다. `warehouseId`, `sourceName`, `rows`, 선택 `newItems`를 받는다. 한 요청은 최대 5,000행이며 행마다 `inventoryItemId`(또는 `itemName`), 과거 `occurredAt`, `movementType`(`inbound`, `outbound`, `adjustment`, `vision_estimate`), `quantity`, 선택 `quantityUnit`, 필수 `note`, 선택 `reference`가 필요하다. `vision_estimate`는 `adjustment`처럼 부호가 있는 증감으로 반영되며 장부 유형은 `vision_estimate`로 남는다. 기본/박스/파렛트 단위를 환산하되 현재 잔량은 변경하지 않는다. `newItems`로 전달한 신규 품목도 같은 배치에 담겨 보관 상태(비활성)로 저장되며 승인 전에는 재고 목록·장부·구역에 나타나지 않는다. 응답은 `202`와 `batchId`, `PENDING`을 반환한다.
 
 ### `GET /api/inventory/imports?warehouseId=<id>`
 
@@ -282,7 +284,7 @@ $$안전재고 = Z \times \sigma_{28일\ 일별\ 출고량} \times \sqrt{리드�
 { "id": "batch-uuid", "approve": true, "note": "원본 전표 확인 완료" }
 ```
 
-승인은 행이 기존 최초 장부보다 과거이고, 역산 기초 잔량과 시간순 중간 잔량이 음수가 아닐 때만 전체 성공한다. 과거 장부만 추가하며 현재 잔량은 바꾸지 않는다. 다른 창고의 배치를 검토할 수 없다.
+승인은 행이 기존 최초 장부보다 과거이고, 역산 기초 잔량과 시간순 중간 잔량이 음수가 아닐 때만 전체 성공한다. 승인 시 배치에 담긴 신규 품목이 활성화되고 `initial` 장부가 생성된 뒤 과거 장부만 추가하며 현재 잔량은 바꾸지 않는다. 반려하면 신규 품목과 거래가 모두 반영되지 않는다. 다른 창고의 배치를 검토할 수 없다.
 
 ### 재고 상태 판정 기준
 

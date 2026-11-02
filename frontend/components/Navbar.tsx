@@ -1,48 +1,68 @@
 'use client';
 
 import React, { useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { useAuth } from '../context/AuthContext';
 import { QrCode, LogOut, Shield, Warehouse, Lock, Users } from 'lucide-react';
 import AdminUserConsole from './AdminUserConsole';
 
+const NAV_LINKS = [
+  { href: '/barcode', label: '바코드 스캔', icon: true },
+  { href: '/delivery', label: '배송 관리' },
+  { href: '/', label: '재고 현황' },
+  { href: '/report', label: 'AI 리포트' },
+  { href: '/monitor', label: '실시간 모니터링', live: true },
+];
+
 export default function Navbar() {
   const { user, logout } = useAuth();
+  const pathname = usePathname() || '/';
   const [showConsole, setShowConsole] = useState(false);
 
   const isSuperAdmin = user?.role === '서버 관리자';
   const isWarehouseAdmin = user?.role === '관리자' || user?.role === '총괄';
+  const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`));
 
   return (
     <>
       <nav className="sticky top-0 z-50 w-full backdrop-blur-[20px] bg-white/70 dark:bg-black/70 border-b border-gray-200 dark:border-gray-800 font-sans">
-        <div className="max-w-[1200px] mx-auto px-6 h-14 flex items-center justify-between">
-          <a href={user ? '/' : '/login'} className="font-bold text-lg tracking-tight text-textMain dark:text-white flex items-center gap-2">
+        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-2 lg:py-0 lg:h-14 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <a href={user ? '/' : '/login'} className="font-bold text-lg tracking-tight text-textMain dark:text-white flex items-center gap-2 shrink-0">
             <span className="w-7 h-7 rounded-lg bg-primary text-white flex items-center justify-center text-xs font-black">W</span>
             AI Native WMS
           </a>
 
           {user ? (
-            <div className="flex items-center gap-5 text-sm font-semibold text-textMuted">
+            <div className="contents lg:flex lg:items-center lg:gap-5 text-sm font-semibold text-textMuted">
               {/* 서버 관리자(wjmals)가 아닐 때만 일반 창고 메뉴 표시 */}
               {!isSuperAdmin && (
-                <>
-                  <a href="/barcode" className="hover:text-primary transition-colors flex items-center gap-1.5 text-primary font-bold">
-                    <QrCode className="w-4 h-4" />
-                    바코드 스캔
-                  </a>
-
-                  <a href="/delivery" className="hover:text-primary transition-colors">배송 관리</a>
-                  <a href="/" className="hover:text-primary transition-colors">재고 현황</a>
-                  <a href="/report" className="hover:text-primary transition-colors">AI 리포트</a>
-                  <a href="/monitor" className="hover:text-red-500 transition-colors flex items-center gap-1.5 text-red-500 font-bold">
-                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
-                    실시간 모니터링
-                  </a>
-                </>
+                <div className="order-last lg:order-none w-full lg:w-auto flex items-center gap-1 overflow-x-auto pb-1 lg:pb-0">
+                  {NAV_LINKS.map((link) => {
+                    const active = isActive(link.href);
+                    return (
+                      <a
+                        key={link.href}
+                        href={link.href}
+                        aria-current={active ? 'page' : undefined}
+                        className={`whitespace-nowrap px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-colors ${
+                          active
+                            ? 'bg-primary text-white font-bold shadow-sm'
+                            : link.live
+                            ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
+                            : 'hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-primary'
+                        }`}
+                      >
+                        {link.icon && <QrCode className="w-4 h-4" />}
+                        {link.live && <span className={`w-2 h-2 rounded-full animate-pulse ${active ? 'bg-white' : 'bg-red-500'}`}></span>}
+                        {link.label}
+                      </a>
+                    );
+                  })}
+                </div>
               )}
 
               {/* User Profile, Admin Member Console & Logout */}
-              <div className="border-l border-gray-200 dark:border-gray-700 pl-4 ml-1 flex items-center gap-3">
+              <div className="lg:border-l border-gray-200 dark:border-gray-700 lg:pl-4 lg:ml-1 flex items-center gap-2 sm:gap-3 min-w-0">
                 {/* 창고 관리자 전용 소속 창고지기 승인 콘솔 버튼 */}
                 {isWarehouseAdmin && (
                   <button
@@ -54,7 +74,7 @@ export default function Navbar() {
                   </button>
                 )}
 
-                <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-xl">
+                <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-xl min-w-0">
                   {isSuperAdmin ? (
                     <Shield className="w-3.5 h-3.5 text-purple-600" />
                   ) : isWarehouseAdmin ? (
@@ -62,7 +82,7 @@ export default function Navbar() {
                   ) : (
                     <Warehouse className="w-3.5 h-3.5 text-emerald-500" />
                   )}
-                  <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
+                  <span className="text-xs font-bold text-gray-800 dark:text-gray-200 truncate">
                     {user.name} ({user.role})
                   </span>
                 </div>
