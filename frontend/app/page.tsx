@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext';
 import SuperAdminConsole from '../components/SuperAdminConsole';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
 import { formatQty } from '../lib/formatQuantity';
+import { useBarcodeMode } from '../lib/barcodeMode';
 
 type InventoryItem = {
   id: string;
@@ -129,6 +130,7 @@ export default function InventoryDashboard() {
   const [showAddInvModal, setShowAddInvModal] = useState(false);
   const [newInvName, setNewInvName] = useState('');
   const [newInvBarcode, setNewInvBarcode] = useState('');
+  const [barcodeMode] = useBarcodeMode();
   const [newInvCurrent, setNewInvCurrent] = useState<string>('');
   const [newInvSafe, setNewInvSafe] = useState<string>('');
   const [newInvUnit, setNewInvUnit] = useState('ea');
@@ -238,7 +240,8 @@ export default function InventoryDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newInvName.trim(),
-          barcode: newInvBarcode.trim() || undefined,
+          barcode: barcodeMode === 'custom' ? newInvBarcode.trim() || undefined : undefined,
+          generateBarcode: barcodeMode === 'generated',
           current: Number(newInvCurrent || 0),
           safe: Number(newInvSafe || 0),
           unit: newInvUnit.trim() || 'ea',
@@ -924,13 +927,17 @@ export default function InventoryDashboard() {
 
                 <div>
                   <label className="font-bold text-textMuted uppercase block mb-1">바코드 / SKU</label>
-                  <input
-                    type="text"
-                    value={newInvBarcode}
-                    onChange={e => setNewInvBarcode(e.target.value)}
-                    placeholder="라벨에 인쇄된 코드 (선택)"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
+                  {barcodeMode === 'generated' ? (
+                    <p className="px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 text-xs text-textMuted">저장하면 시스템이 바코드를 자동 생성합니다. 기존 바코드를 쓰려면 바코드 스캔 화면의 바코드 방식에서 &quot;내 바코드 사용&quot;을 선택하세요.</p>
+                  ) : (
+                    <input
+                      type="text"
+                      value={newInvBarcode}
+                      onChange={e => setNewInvBarcode(e.target.value)}
+                      placeholder="기존 제품에 붙어 있는 바코드 번호 (선택)"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

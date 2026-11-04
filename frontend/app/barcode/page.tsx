@@ -20,6 +20,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
 import { formatQty, formatDiffText } from '../../lib/formatQuantity';
+import { useBarcodeMode } from '../../lib/barcodeMode';
 
 interface InventoryItem {
   id: string;
@@ -70,6 +71,8 @@ export default function BarcodeScannerPage() {
   const [lastScan, setLastScan] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [updateMsg, setUpdateMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [barcodeMode, setBarcodeMode] = useBarcodeMode();
+  const [barcodeDraft, setBarcodeDraft] = useState('');
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -319,6 +322,31 @@ export default function BarcodeScannerPage() {
     }
   };
 
+  const saveBarcode = async (target: InventoryItem, value: string | null) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const code = value ?? `WMS${String(Math.floor(Math.random() * 1e10)).padStart(10, '0')}`;
+      const res = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: target.id, warehouseId: user?.warehouseId, barcode: code, movementType: 'adjustment', note: value === null ? '시스템 바코드 생성' : '바코드 등록/변경', source: 'manual' }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const updated = normalizeApiNumbers(body) as Partial<InventoryItem>;
+        setSelectedItem((prev) => (prev && prev.id === target.id ? { ...prev, ...updated } : prev));
+        setItems((prev) => prev.map((item) => (item.id === target.id ? { ...item, ...updated } : item)));
+        setBarcodeDraft('');
+        setUpdateMsg({ type: 'success', text: code ? `[${target.name}] 바코드를 '${code}'(으)로 저장했습니다.` : `[${target.name}] 바코드를 삭제했습니다.` });
+        return;
+      }
+      if (res.status !== 409 || value !== null) {
+        setUpdateMsg({ type: 'error', text: body?.error || '바코드를 저장하지 못했습니다.' });
+        return;
+      }
+    }
+    setUpdateMsg({ type: 'error', text: '바코드를 생성하지 못했습니다. 다시 시도하세요.' });
+  };
+
   const printLabel = () => {
     if (!selectedItem) return;
     const labelWindow = window.open('', '_blank', 'width=460,height=320');
@@ -395,6 +423,17 @@ export default function BarcodeScannerPage() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Column: Scanner & Quick Input (5 cols) */}
         <div className="lg:col-span-5 space-y-6">
+          {/* Camera Scanner Box */}
+          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-5 shadow-sm space-y-2">
+            <h2 className="text-sm font-bold text-gray-900 dark:text-white">바코드 방식 (이 브라우저 설정)</h2>
+            <div className="grid grid-cols-2 gap-2">
+              {([['generated', '웹 생성 바코드 사용'], ['custom', '내 바코드 사용']] as const).map(([mode, label]) => (
+                <button key={mode} onClick={() => setBarcodeMode(mode)} className={`rounded-lg border px-2 py-2 text-xs font-bold ${barcodeMode === mode ? 'bg-primary text-white border-primary' : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>{label}</button>
+              ))}
+            </div>
+            <p className="text-[11px] text-textMuted">{barcodeMode === 'generated' ? '품목을 등록할 때 시스템이 바코드(WMS+10자리)를 만들어 주고, 라벨을 인쇄해 붙여서 쓰면 됩니다.' : '이미 쓰고 있는 제품 바코드를 품목에 직접 등록합니다. 아래 품목 카드에서 입력하거나 스캐너로 읽어 등록하세요.'}</p>
+          </div>
+
           {/* Camera Scanner Box */}
           <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 shadow-sm relative overflow-hidden">
             <div className="flex items-center justify-between mb-4">
@@ -571,8 +610,20 @@ export default function BarcodeScannerPage() {
                 </div>
               </div>
 
+              <div className="rounded-xl border border-gray-100 dark:border-gray-800 p-3 space-y-2 text-xs">
+                <p className="font-bold">바코드: {selectedItem.barcode ? <span className="font-mono break-all">{selectedItem.barcode}</span> : <span className="text-amber-700">미등록</span>}</p>
+                {barcodeMode === 'generated' ? (
+                  <button onClick={() => void saveBarcode(selectedItem, null)} className="rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 font-semibold">{selectedItem.barcode ? '시스템 바코드로 재생성' : '시스템 바코드 생성'}</button>
+                ) : (
+                  <div className="flex gap-2">
+                    <input value={barcodeDraft} onChange={(event) => setBarcodeDraft(event.target.value)} placeholder="기존 제품 바코드 입력 또는 스캔" className="min-w-0 flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-2 font-mono" />
+                    <button disabled={!barcodeDraft.trim()} onClick={() => void saveBarcode(selectedItem, barcodeDraft.trim())} className="shrink-0 rounded-lg bg-primary px-3 py-2 font-semibold text-white disabled:opacity-50">등록</button>
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-end">
-                <button onClick={printLabel} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-bold"><BarcodeIcon className="h-4 w-4" />라벨 인쇄</button>
+                <button onClick={printLabel} disabled={!selectedItem.barcode} title={selectedItem.barcode ? '' : '바코드를 먼저 등록하세요'} className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-xs font-bold disabled:opacity-50"><BarcodeIcon className="h-4 w-4" />라벨 인쇄</button>
               </div>
 
               {/* Stock Numbers Display */}

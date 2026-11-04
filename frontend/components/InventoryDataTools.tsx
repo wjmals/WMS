@@ -2,14 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { AlertTriangle, Check, Download, FileSpreadsheet, Pencil, RefreshCw, Save, Upload, X } from 'lucide-react';
+import { AlertTriangle, Check, Download, Eye, FileSpreadsheet, Pencil, RefreshCw, Save, Upload, X } from 'lucide-react';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
 import { formatQty } from '../lib/formatQuantity';
 
 type InventoryChoice = { id: string; name: string; barcode?: string | null; current: number; unit: string; packageUnit: string | null; packageSize?: number; palletUnit?: string | null; palletSize?: number; safe: number; statusLabel?: string };
 type ImportBatch = { id: string; sourceName: string; submittedEmail: string; rowCount: number; status: string; createdAt: string; reviewNote: string };
 type LedgerRow = { id: string; itemName: string; movementType: string; quantityDelta: number; balanceAfter: number; reason: string; source: string; operator: string | null; occurredAt: string };
-type Props = { warehouseId?: string; role?: string };
+type Props = { warehouseId?: string; role?: string; onChanged?: () => void };
+type PreviewRow = { itemName: string; occurredAt: string; movementType: string; quantityDelta: number; note: string; reference: string };
+type PreviewData = { newItems: Array<{ name: string; barcode: string | null; unit: string; current: number; safe: number }>; rows: PreviewRow[] };
 type SheetRow = Record<string, ExcelJS.CellValue>;
 
 const rustApi = '/api/inventory';
@@ -61,7 +63,10 @@ function styleHeader(row: ExcelJS.Row, color = 'FF1E3A8A') {
   });
 }
 
-export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '' }: Props) {
+export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '', onChanged }: Props) {
+  const [previewBatchId, setPreviewBatchId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [items, setItems] = useState<InventoryChoice[]>([]);
   const [inventoryLoaded, setInventoryLoaded] = useState(false);
   const [inventoryLoadError, setInventoryLoadError] = useState('');
@@ -93,7 +98,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   }, [warehouseId, filterItem, filterOperator, filterSource, filterType]);
 
   const loadLedger = useCallback(async () => {
-    const response = await fetch(ledgerUrl(2000));
+    const response = await fetch(ledgerUrl(filterItem.trim() ? 20000 : 2000));
     const data = await response.json();
     if (!Array.isArray(data)) return;
     const rows: LedgerRow[] = normalizeApiNumbers(data);
@@ -129,6 +134,53 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       setRefreshing(false);
     }
   }, [warehouseId, loadLedger]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(''), 8000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const togglePreview = async (batch: ImportBatch) => {
+    if (previewBatchId === batch.id) {
+      setPreviewBatchId(null);
+      setPreview(null);
+      return;
+    }
+    setPreviewBatchId(batch.id);
+    setPreview(null);
+    setPreviewLoading(true);
+    try {
+      const response = await fetch(`${rustApi}/imports/rows?batchId=${encodeURIComponent(batch.id)}`);
+      const text = await response.text();
+      let data: (PreviewData & { error?: string }) | null = null;
+      try { data = JSON.parse(text); } catch { /* 서버가 문자열 오류를 보낸 경우 */ }
+      if (!response.ok || !data) throw new Error(data?.error || text.trim() || '가져오기 내용을 불러오지 못했습니다.');
+      setPreview(normalizeApiNumbers(data));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '가져오기 내용을 불러오지 못했습니다.');
+      setPreviewBatchId(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const downloadPreview = async (batch: ImportBatch) => {
+    if (!preview) return;
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('가져오기 내용');
+    sheet.columns = [
+      { header: '거래일시', width: 20 }, { header: '품목명', width: 28 }, { header: '유형', width: 12 },
+      { header: '수량(기본 단위)', width: 16 }, { header: '사유', width: 36 }, { header: '참조번호', width: 16 },
+    ];
+    styleHeader(sheet.getRow(1));
+    preview.rows.forEach((row) => {
+      const added = sheet.addRow([new Date(row.occurredAt), row.itemName, MOVEMENT_LABELS[row.movementType] || row.movementType, row.quantityDelta, row.note, row.reference]);
+      added.getCell(1).numFmt = 'yyyy-mm-dd hh:mm';
+      added.getCell(4).numFmt = '#,##0.##;[Red]-#,##0.##';
+    });
+    await saveWorkbook(workbook, `${batch.sourceName.replace(/\.xlsx$/i, '')}-검토본.xlsx`);
+  };
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -418,10 +470,15 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: batch.id, approve, note }),
       });
-      const result = await response.json();
+      const text = await response.text();
+      let result: { error?: string } = {};
+      try { result = JSON.parse(text); } catch { result = { error: text.trim() }; }
       if (!response.ok) throw new Error(result.error || '검토 결과를 저장하지 못했습니다.');
       setNotice(approve ? '승인했습니다. 가져온 품목과 거래가 장부에 반영되었습니다. 현재 잔량은 그대로 유지됩니다.' : '반려했습니다. 신규 품목과 거래는 반영되지 않습니다.');
+      setPreviewBatchId(null);
+      setPreview(null);
       await refresh();
+      onChanged?.();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '검토를 저장하지 못했습니다.');
     } finally {
@@ -462,6 +519,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       setSafeDraft('');
       setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, ...normalizeApiNumbers(result), safe } : entry));
       setNotice(`'${item.name}' 안전재고를 ${formatQty(safe)} ${item.unit}로 저장했습니다.`);
+      onChanged?.();
       try {
         await refresh();
       } catch {
@@ -475,6 +533,22 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   };
 
   const hasLedgerFilter = !!(filterItem || filterOperator || filterSource || filterType);
+
+  // 품목 검색 시 품목·날짜별 입고/출고/조정 합계와 그날 마지막 잔량
+  const dailySummary = (() => {
+    if (!filterItem.trim()) return [];
+    const groups = new Map<string, { date: string; item: string; inbound: number; outbound: number; adjust: number; balance: number }>();
+    for (const row of ledger) {
+      const date = new Date(row.occurredAt).toLocaleDateString('sv-SE');
+      const key = `${date}|${row.itemName}`;
+      const entry = groups.get(key) || { date, item: row.itemName, inbound: 0, outbound: 0, adjust: 0, balance: row.balanceAfter };
+      if (row.movementType === 'inbound') entry.inbound += row.quantityDelta;
+      else if (row.movementType === 'outbound') entry.outbound += -row.quantityDelta;
+      else if (row.movementType !== 'initial') entry.adjust += row.quantityDelta;
+      groups.set(key, entry);
+    }
+    return Array.from(groups.values());
+  })();
 
   return (
     <section className="space-y-5 border-y border-gray-200 dark:border-gray-800 py-6 min-w-0">
@@ -519,14 +593,51 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
             </div>
           )}
           <p className="text-xs leading-relaxed text-textMuted">엑셀 양식(거래입력 시트)에 입고·출고·조정·비전추정 거래를 적어 올리면 승인 대기로 등록되고, 신규 품목은 유형을 &quot;기초재고&quot;로 한 줄 추가합니다. 신규 품목과 거래 모두 창고 관리자 승인 후에 재고에 반영됩니다.</p>
-          {notice && <p role="status" className="text-xs text-primary break-words">{notice}</p>}
+          {notice && <p role="status" className="flex items-start justify-between gap-2 rounded-md bg-blue-50 dark:bg-blue-950/30 px-3 py-2 text-xs text-primary break-words"><span className="min-w-0">{notice}</span><button onClick={() => setNotice('')} title="닫기" className="shrink-0 opacity-60 hover:opacity-100"><X size={13} /></button></p>}
           <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">
             <h3 className="text-sm font-bold">가져오기 검토 {pendingBatches.length}</h3>
             {pendingBatches.length === 0 ? <p className="text-xs text-textMuted">검토 대기 중인 가져오기가 없습니다.</p> : pendingBatches.map((batch) => (
               <article key={batch.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 dark:border-gray-800 py-2 text-xs">
                 <div className="min-w-0 break-words"><strong>{batch.sourceName}</strong><span className="ml-2 text-textMuted">{batch.rowCount}건 · 승인 대기 · {batch.submittedEmail}</span></div>
-                {canReview ? <div className="flex gap-1"><button disabled={busy} onClick={() => void reviewBatch(batch, true)} title="승인" className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded"><Check size={15} /></button><button disabled={busy} onClick={() => void reviewBatch(batch, false)} title="반려" className="p-1.5 text-red-700 hover:bg-red-50 rounded"><X size={15} /></button></div> : <span className="text-textMuted">관리자 승인 필요</span>}
+                <div className="flex items-center gap-1">
+                  <button onClick={() => void togglePreview(batch)} className="inline-flex items-center gap-1 rounded border border-gray-300 dark:border-gray-700 px-2 py-1 font-semibold"><Eye size={13} />{previewBatchId === batch.id ? '내용 닫기' : '내용 확인'}</button>
+                  {canReview && <><button disabled={busy} onClick={() => void reviewBatch(batch, true)} title="승인" className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded"><Check size={15} /></button><button disabled={busy} onClick={() => void reviewBatch(batch, false)} title="반려" className="p-1.5 text-red-700 hover:bg-red-50 rounded"><X size={15} /></button></>}
+                </div>
+                {!canReview && <span className="basis-full text-textMuted">관리자 승인 필요</span>}
                 {batch.reviewNote && <p className="basis-full text-textMuted">검토 메모: {batch.reviewNote}</p>}
+                {previewBatchId === batch.id && (
+                  <div className="basis-full space-y-2 rounded-lg border border-gray-200 dark:border-gray-800 p-2">
+                    {previewLoading || !preview ? <p className="text-textMuted">불러오는 중...</p> : (() => {
+                      const dates = preview.rows.map((row) => new Date(row.occurredAt).getTime());
+                      const range = dates.length ? `${new Date(Math.min(...dates)).toLocaleDateString('ko-KR')} ~ ${new Date(Math.max(...dates)).toLocaleDateString('ko-KR')}` : '-';
+                      const perItem = new Map<string, { inbound: number; outbound: number; adjust: number; count: number }>();
+                      preview.rows.forEach((row) => {
+                        const entry = perItem.get(row.itemName) || { inbound: 0, outbound: 0, adjust: 0, count: 0 };
+                        entry.count += 1;
+                        if (row.movementType === 'inbound') entry.inbound += row.quantityDelta;
+                        else if (row.movementType === 'outbound') entry.outbound += -row.quantityDelta;
+                        else entry.adjust += row.quantityDelta;
+                        perItem.set(row.itemName, entry);
+                      });
+                      return (
+                        <>
+                          <p className="text-textMuted">거래 {preview.rows.length.toLocaleString()}건 · 기간 {range} · 신규 품목 {preview.newItems.length}개</p>
+                          {preview.newItems.length > 0 && <p className="break-words"><strong>신규 품목:</strong> {preview.newItems.map((item) => `${item.name}(현재 ${formatQty(item.current)} ${item.unit})`).join(', ')}</p>}
+                          <div className="max-h-40 overflow-auto">
+                            <table className="w-full text-left"><thead className="sticky top-0 bg-gray-50 dark:bg-gray-900 text-textMuted"><tr><th className="p-1">품목</th><th className="p-1">건수</th><th className="p-1">입고 합계</th><th className="p-1">출고 합계</th><th className="p-1">조정 합계</th></tr></thead>
+                              <tbody>{Array.from(perItem.entries()).map(([name, entry]) => <tr key={name} className="border-t border-gray-100 dark:border-gray-800"><td className="p-1">{name}</td><td className="p-1">{entry.count}</td><td className="p-1 font-mono">{formatQty(entry.inbound)}</td><td className="p-1 font-mono">{formatQty(entry.outbound)}</td><td className="p-1 font-mono">{formatQty(entry.adjust)}</td></tr>)}</tbody></table>
+                          </div>
+                          <div className="max-h-56 overflow-auto">
+                            <table className="w-full min-w-[520px] text-left"><thead className="sticky top-0 bg-gray-50 dark:bg-gray-900 text-textMuted"><tr><th className="p-1">일시</th><th className="p-1">품목</th><th className="p-1">유형</th><th className="p-1">수량</th><th className="p-1">사유</th></tr></thead>
+                              <tbody>{preview.rows.slice(0, 500).map((row, index) => <tr key={index} className="border-t border-gray-100 dark:border-gray-800"><td className="p-1 whitespace-nowrap">{new Date(row.occurredAt).toLocaleDateString('ko-KR')}</td><td className="p-1">{row.itemName}</td><td className="p-1">{MOVEMENT_LABELS[row.movementType] || row.movementType}</td><td className={`p-1 font-mono ${row.quantityDelta < 0 ? 'text-red-600' : ''}`}>{formatQty(row.quantityDelta)}</td><td className="p-1">{row.note}</td></tr>)}</tbody></table>
+                          </div>
+                          {preview.rows.length > 500 && <p className="text-textMuted">화면에는 앞 500건만 표시합니다. 전체는 엑셀로 확인하세요.</p>}
+                          <button onClick={() => void downloadPreview(batch)} className="inline-flex items-center gap-1 rounded border border-gray-300 dark:border-gray-700 px-2 py-1 font-semibold"><Download size={13} />전체 내용 엑셀로 보기</button>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
               </article>
             ))}
           </div>
@@ -537,7 +648,8 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
             <button onClick={() => void downloadLedger()} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"><Download size={14} />{hasLedgerFilter ? '필터 결과 엑셀 저장' : '전체 기록 엑셀 저장'}</button>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-xs">
-            <input value={filterItem} onChange={(event) => setFilterItem(event.target.value)} placeholder="품목 검색" aria-label="품목 검색" className="min-w-0 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-2" />
+            <input value={filterItem} onChange={(event) => setFilterItem(event.target.value)} list="ledger-items" placeholder="품목 검색/선택" aria-label="품목 검색" className="min-w-0 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-2" />
+            <datalist id="ledger-items">{items.map((item) => <option key={item.id} value={item.name} />)}</datalist>
             <div className="min-w-0">
               <input value={filterOperator} onChange={(event) => setFilterOperator(event.target.value)} list="ledger-operators" placeholder="담당자 검색/선택" aria-label="담당자 검색 또는 선택" className="w-full min-w-0 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-2" />
               <datalist id="ledger-operators">{knownOperators.map((operator) => <option key={operator} value={operator} />)}</datalist>
@@ -551,10 +663,17 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
             </select>
           </div>
           <p className="text-[11px] text-textMuted">{hasLedgerFilter ? '필터 적용 중 · ' : ''}최근 {ledger.length.toLocaleString()}건 표시 (엑셀 저장은 최대 20,000건){hasLedgerFilter && <button onClick={() => { setFilterItem(''); setFilterOperator(''); setFilterSource(''); setFilterType(''); }} className="ml-2 underline">필터 초기화</button>}</p>
+          {dailySummary.length > 0 && (
+            <div className="max-h-56 overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
+              <p className="sticky top-0 bg-gray-50 dark:bg-gray-900 px-2 py-1 text-[11px] font-bold">날짜별 입·출고 요약 (반영된 엑셀 가져오기 포함)</p>
+              <table className="w-full min-w-[480px] text-left text-xs"><thead className="text-textMuted"><tr><th className="p-2">날짜</th><th className="p-2">품목</th><th className="p-2">입고</th><th className="p-2">출고</th><th className="p-2">조정</th><th className="p-2">당일 마지막 재고</th></tr></thead>
+                <tbody>{dailySummary.map((entry) => <tr key={`${entry.date}|${entry.item}`} className="border-t border-gray-100 dark:border-gray-800"><td className="p-2 whitespace-nowrap">{entry.date}</td><td className="p-2">{entry.item}</td><td className="p-2 font-mono text-emerald-700">{entry.inbound ? `+${formatQty(entry.inbound)}` : '-'}</td><td className="p-2 font-mono text-red-600">{entry.outbound ? `-${formatQty(entry.outbound)}` : '-'}</td><td className="p-2 font-mono">{entry.adjust ? formatQty(entry.adjust) : '-'}</td><td className="p-2 font-mono">{formatQty(entry.balance)}</td></tr>)}</tbody></table>
+            </div>
+          )}
           <div className="max-h-[420px] overflow-auto border border-gray-200 dark:border-gray-800 rounded-lg">
             <table className="w-full min-w-[760px] text-left text-xs">
               <thead className="sticky top-0 bg-gray-50 dark:bg-gray-900 text-textMuted"><tr><th className="p-2">일시</th><th className="p-2">품목</th><th className="p-2">유형</th><th className="p-2">증감</th><th className="p-2">잔량</th><th className="p-2">담당자</th><th className="p-2">출처 / 사유</th></tr></thead>
-              <tbody>{ledger.map((row) => <tr key={row.id} className="border-t border-gray-100 dark:border-gray-800"><td className="p-2 whitespace-nowrap">{new Date(row.occurredAt).toLocaleString('ko-KR')}</td><td className="p-2">{row.itemName}</td><td className="p-2">{MOVEMENT_LABELS[row.movementType] || row.movementType}</td><td className={`p-2 font-mono ${row.quantityDelta < 0 ? 'text-red-600' : ''}`}>{formatQty(row.quantityDelta)}</td><td className="p-2 font-mono">{formatQty(row.balanceAfter)}</td><td className="p-2">{row.operator || SYSTEM_OPERATOR}</td><td className="p-2"><span className="font-semibold">{sourceLabel(row.source)}</span><span className="block max-w-[260px] truncate text-textMuted" title={row.reason}>{row.reason}</span></td></tr>)}</tbody>
+              <tbody>{ledger.slice(0, 1000).map((row) => <tr key={row.id} className="border-t border-gray-100 dark:border-gray-800"><td className="p-2 whitespace-nowrap">{new Date(row.occurredAt).toLocaleString('ko-KR')}</td><td className="p-2">{row.itemName}</td><td className="p-2">{MOVEMENT_LABELS[row.movementType] || row.movementType}</td><td className={`p-2 font-mono ${row.quantityDelta < 0 ? 'text-red-600' : ''}`}>{formatQty(row.quantityDelta)}</td><td className="p-2 font-mono">{formatQty(row.balanceAfter)}</td><td className="p-2">{row.operator || SYSTEM_OPERATOR}</td><td className="p-2"><span className="font-semibold">{sourceLabel(row.source)}</span><span className="block max-w-[260px] truncate text-textMuted" title={row.reason}>{row.reason}</span></td></tr>)}</tbody>
             </table>
             {ledger.length === 0 && <p className="p-5 text-center text-xs text-textMuted">장부 기록이 없습니다.</p>}
           </div>

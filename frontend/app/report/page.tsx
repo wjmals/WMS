@@ -10,6 +10,7 @@ import { useAuth } from '../../context/AuthContext';
 import InventoryDataTools from '../../components/InventoryDataTools';
 import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
 import { formatQty, formatDiffText } from '../../lib/formatQuantity';
+import { useBarcodeMode } from '../../lib/barcodeMode';
 
 const UNSET_LABEL = '안전재고 미설정';
 const FILTER_TO_STATUS: Record<string, string> = { '재고 부족': 'shortage', '안전 재고': 'safe', '재고 과다': 'overstock' };
@@ -51,7 +52,8 @@ export default function InventoryReportPage() {
   const [activeFilter, setActiveFilter] = useState('전체');
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
-  const [addForm, setAddForm] = useState({ name: '', current: '', safe: '', unit: 'ea', packageUnit: '', packageSize: '1', palletUnit: '', palletSize: '1', cycle: '월간' });
+  const [addForm, setAddForm] = useState({ name: '', barcode: '', current: '', safe: '', unit: 'ea', packageUnit: '', packageSize: '1', palletUnit: '', palletSize: '1', cycle: '월간' });
+  const [barcodeMode] = useBarcodeMode();
   const [adding, setAdding] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
 
@@ -100,6 +102,8 @@ export default function InventoryReportPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: addForm.name,
+          barcode: barcodeMode === 'custom' ? addForm.barcode.trim() || undefined : undefined,
+          generateBarcode: barcodeMode === 'generated',
           current: Number(addForm.current),
           safe: Number(addForm.safe),
           unit: addForm.unit.trim() || 'ea',
@@ -116,7 +120,7 @@ export default function InventoryReportPage() {
         const errorData = await res.json().catch(() => null);
         throw new Error(errorData?.error || '재고 항목 추가에 실패했습니다.');
       }
-      setAddForm({ name: '', current: '', safe: '', unit: 'ea', packageUnit: '', packageSize: '1', palletUnit: '', palletSize: '1', cycle: '월간' });
+      setAddForm({ name: '', barcode: '', current: '', safe: '', unit: 'ea', packageUnit: '', packageSize: '1', palletUnit: '', palletSize: '1', cycle: '월간' });
       setShowAddForm(false);
       await fetchData();
     } catch (e) {
@@ -312,6 +316,14 @@ export default function InventoryReportPage() {
                   onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
                   className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
                 />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-xs font-semibold text-textMuted mb-1 block">바코드 {barcodeMode === 'generated' ? '(자동 생성)' : '(선택)'}</label>
+                {barcodeMode === 'generated' ? (
+                  <p className="px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 text-xs text-textMuted">저장하면 시스템이 바코드를 자동 생성합니다. (바코드 스캔 화면에서 방식 변경)</p>
+                ) : (
+                  <input type="text" placeholder="기존 제품의 바코드 번호" value={addForm.barcode} onChange={e => setAddForm(f => ({ ...f, barcode: e.target.value }))} className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                )}
               </div>
               <div>
                 <label className="text-xs font-semibold text-textMuted mb-1 block">현재 재고량 ({addForm.unit || '단위'}) *</label>
@@ -530,7 +542,7 @@ export default function InventoryReportPage() {
         )}
       </div>
 
-      <InventoryDataTools warehouseId={user?.warehouseId} role={user?.role} />
+      <InventoryDataTools warehouseId={user?.warehouseId} role={user?.role} onChanged={() => void fetchData(true)} />
 
       {/* 재고 상태 상세 모달 */}
       <AnimatePresence>

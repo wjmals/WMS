@@ -118,6 +118,8 @@ struct CreateInventoryItem {
     pallet_unit: Option<String>,
     #[serde(default, alias = "palletSize")]
     pallet_size: Option<Decimal>,
+    #[serde(default, alias = "generateBarcode")]
+    generate_barcode: Option<bool>,
     note: Option<String>,
     cycle: Option<String>,
 }
@@ -210,6 +212,7 @@ struct SaveZone {
 #[derive(Deserialize)]
 struct UpdateInventoryItem {
     id: Uuid,
+    barcode: Option<String>,
     #[serde(alias = "warehouseId")]
     warehouse_id: String,
     current: Option<Decimal>,
@@ -301,6 +304,12 @@ struct HistoricalMovementRow {
 struct MovementImportQuery {
     #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ImportRowsQuery {
+    #[serde(alias = "batchId")]
+    batch_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -576,6 +585,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             axum::routing::post(submit_movement_import),
         )
         .route("/api/inventory/imports", get(list_movement_imports))
+        .route("/api/inventory/imports/rows", get(list_movement_import_rows))
         .route(
             "/api/inventory/imports/review",
             axum::routing::post(review_movement_import),
@@ -914,6 +924,11 @@ async fn create_inventory(
     }
 
     let db = state.db.ok_or_else(database_not_configured)?;
+    let barcode_value: Option<String> = match input.barcode.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        Some(own) => Some(own.to_string()),
+        None if input.generate_barcode.unwrap_or(false) => Some(generate_barcode(&db, &input.warehouse_id).await?),
+        None => None,
+    };
     let mut transaction = db.begin().await.map_err(internal_error)?;
     let (status, status_label, diff_text, recommendation) =
         classify_stock(input.current, input.safe, unit);
@@ -922,7 +937,7 @@ async fn create_inventory(
          VALUES ($1,$2,$3,$4,$5,$6,$14,$15,$7,$8,$9,$10,$11,$12,$13,CURRENT_DATE)
          RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,pallet_unit,pallet_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
     ).bind(&input.warehouse_id).bind(input.name.trim())
-        .bind(input.barcode.as_deref().filter(|value| !value.trim().is_empty()))
+        .bind(barcode_value.as_deref())
         .bind(unit).bind(input.package_unit.as_deref().filter(|value| !value.trim().is_empty())).bind(package_size)
         .bind(input.current).bind(input.safe).bind(status).bind(status_label).bind(diff_text).bind(recommendation)
         .bind(input.cycle.unwrap_or_else(|| "월간".to_string()))
@@ -1011,7 +1026,7 @@ async fn update_inventory(
         } else {
             converted
         }
-    } else if input.safe.is_some() {
+    } else if input.safe.is_some() || input.barcode.is_some() {
         Decimal::ZERO
     } else {
         return Err((
@@ -1051,11 +1066,16 @@ async fn update_inventory(
     let (status, status_label, diff_text, recommendation) =
         classify_stock(current, safe, &existing.4);
     let mut item = sqlx::query_as::<_, InventoryItem>(
-        "UPDATE inventory_items SET current=$1,safe=$2,safety_stock_mode=$3,status=$4,status_label=$5,diff_text=$6,recommendation=$7,updated_at=now()
+        "UPDATE inventory_items SET current=$1,safe=$2,safety_stock_mode=$3,status=$4,status_label=$5,diff_text=$6,recommendation=$7,barcode=CASE WHEN $10 THEN $11 ELSE barcode END,updated_at=now()
          WHERE id=$8 AND warehouse_id=$9
          RETURNING id,warehouse_id,name,barcode,current,safe,safety_stock_mode,safety_stock_prompted,safety_stock_lead_time_days,safety_stock_service_level,unit,package_unit,package_size,pallet_unit,pallet_size,status,status_label,diff_text,recommendation,cycle,date,created_at,updated_at",
     ).bind(current).bind(safe).bind(safety_stock_mode).bind(status).bind(status_label).bind(diff_text).bind(recommendation)
-    .bind(input.id).bind(input.warehouse_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
+    .bind(input.id).bind(input.warehouse_id).bind(input.barcode.is_some()).bind(input.barcode.as_deref().map(str::trim).filter(|value| !value.is_empty()))
+    .fetch_optional(&mut *transaction).await.map_err(|error| {
+        if error.as_database_error().is_some_and(|db_error| db_error.is_unique_violation()) {
+            (StatusCode::CONFLICT, "이미 다른 품목이 사용 중인 바코드입니다.".to_string())
+        } else { internal_error(error) }
+    })?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "해당 아이템을 찾을 수 없습니다.".to_string()))?;
     if delta != Decimal::ZERO {
         sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
@@ -1162,6 +1182,12 @@ async fn set_safety_stock_mode(
             let pending_imports = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_movement_import_batches WHERE warehouse_id=$1 AND status='PENDING'")
                 .bind(&warehouse_id).fetch_one(&mut *transaction).await.map_err(internal_error)?;
             let hint = if pending_imports > 0 { format!(" 승인 대기 중인 가져오기 {}건은 승인 후 반영됩니다.", pending_imports) } else { String::new() };
+            let last_outbound = sqlx::query_scalar::<_, Option<DateTime<Utc>>>("SELECT MAX(created_at) FROM inventory_movements WHERE inventory_item_id=$1 AND movement_type='outbound'")
+                .bind(input.id).fetch_one(&mut *transaction).await.map_err(internal_error)?;
+            let hint = match last_outbound {
+                Some(at) if recent_outbound_days == 0 => format!("{} 가장 최근 출고 기록은 {}이며, 자동 계산은 최근 28일의 출고를 사용합니다.", hint, at.format("%Y-%m-%d")),
+                _ => hint,
+            };
             return Err((StatusCode::CONFLICT, format!("자동 안전재고를 계산하려면 완료일 35일 이상과 최근 28일 중 출고 기록일 5일 이상이 필요합니다. 현재 완료일 {}일, 최근 출고 기록일 {}일입니다.{}", history.len(), recent_outbound_days, hint)));
         }
         let recent = history
@@ -1309,6 +1335,7 @@ async fn submit_movement_import(
     }
 
     let mut duplicate_movements = Vec::new();
+    let mut anchors: std::collections::HashMap<Uuid, Option<DateTime<Utc>>> = std::collections::HashMap::new();
     for (row_index, row) in input.rows.into_iter().enumerate() {
         let source_row = row.source_row.unwrap_or(row_index + 2);
         if !matches!(
@@ -1358,6 +1385,23 @@ async fn submit_movement_import(
             "outbound" => -magnitude,
             _ => row.quantity * multiplier,
         };
+        let anchor = match anchors.get(&item.0) {
+            Some(cached) => *cached,
+            None => {
+                let found = sqlx::query_scalar::<_, Option<DateTime<Utc>>>("SELECT MIN(created_at) FROM inventory_movements WHERE inventory_item_id=$1 AND movement_type='initial'")
+                    .bind(item.0).fetch_one(&mut *transaction).await.map_err(internal_error)?;
+                anchors.insert(item.0, found);
+                found
+            }
+        };
+        if let Some(anchor) = anchor {
+            if row.occurred_at >= anchor {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{}행: '{}' 품목은 {} 이후 장부가 이미 있어 그보다 과거 거래만 가져올 수 있습니다. (거래일: {})", source_row, item.1, anchor.format("%Y-%m-%d %H:%M"), row.occurred_at.format("%Y-%m-%d %H:%M")),
+                ));
+            }
+        }
         let duplicate_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (
                 SELECT 1 FROM inventory_movements
@@ -1453,6 +1497,44 @@ async fn list_movement_imports(
     Ok(Json(batches.into_iter().map(|batch| serde_json::json!({"id":batch.0,"sourceName":batch.1,"submittedBy":batch.2,"submittedEmail":batch.3,"rowCount":batch.4,"status":batch.5,"createdAt":batch.6,"reviewedEmail":batch.7,"reviewedAt":batch.8,"reviewNote":batch.9})).collect()))
 }
 
+async fn list_movement_import_rows(
+    State(state): State<AppState>,
+    Query(query): Query<ImportRowsQuery>,
+    axum::Extension(user): axum::Extension<AuthenticatedUser>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let batch = sqlx::query_as::<_, (String, String, String, String, i32, DateTime<Utc>)>(
+        "SELECT warehouse_id,source_name,submitted_email,status,row_count,created_at FROM inventory_movement_import_batches WHERE id=$1",
+    ).bind(query.batch_id).fetch_optional(&db).await.map_err(internal_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "가져오기 배치를 찾을 수 없습니다.".to_string()))?;
+    if user.role != "서버 관리자" && user.warehouse_id.as_deref() != Some(batch.0.as_str()) {
+        return Err((StatusCode::FORBIDDEN, "다른 창고의 배치는 볼 수 없습니다.".to_string()));
+    }
+    let rows = sqlx::query_as::<_, (String, DateTime<Utc>, String, Decimal, String, String)>(
+        "SELECT item_name,occurred_at,movement_type,quantity_delta,note,reference FROM inventory_movement_import_rows WHERE batch_id=$1 ORDER BY occurred_at,id LIMIT 20000",
+    ).bind(query.batch_id).fetch_all(&db).await.map_err(internal_error)?;
+    let new_items = sqlx::query_as::<_, (String, Option<String>, String, Decimal, Decimal)>(
+        "SELECT name,barcode,unit,current,safe FROM inventory_items WHERE pending_batch_id=$1 ORDER BY name",
+    ).bind(query.batch_id).fetch_all(&db).await.map_err(internal_error)?;
+    Ok(Json(serde_json::json!({
+        "batch": {"sourceName": batch.1, "submittedEmail": batch.2, "status": batch.3, "rowCount": batch.4, "createdAt": batch.5},
+        "newItems": new_items.into_iter().map(|item| serde_json::json!({"name":item.0,"barcode":item.1,"unit":item.2,"current":item.3,"safe":item.4})).collect::<Vec<_>>(),
+        "rows": rows.into_iter().map(|row| serde_json::json!({"itemName":row.0,"occurredAt":row.1,"movementType":row.2,"quantityDelta":row.3,"note":row.4,"reference":row.5})).collect::<Vec<_>>(),
+    })))
+}
+
+async fn generate_barcode(db: &sqlx::PgPool, warehouse_id: &str) -> Result<String, (StatusCode, String)> {
+    for _ in 0..10 {
+        let candidate = format!("WMS{:010}", rand::thread_rng().next_u64() % 10_000_000_000);
+        let taken = sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM inventory_items WHERE warehouse_id=$1 AND barcode=$2 AND archived_at IS NULL)")
+            .bind(warehouse_id).bind(&candidate).fetch_one(db).await.map_err(internal_error)?;
+        if !taken {
+            return Ok(candidate);
+        }
+    }
+    Err((StatusCode::INTERNAL_SERVER_ERROR, "바코드를 생성하지 못했습니다. 다시 시도하세요.".to_string()))
+}
+
 async fn review_movement_import(
     State(state): State<AppState>,
     axum::Extension(user): axum::Extension<AuthenticatedUser>,
@@ -1531,39 +1613,59 @@ async fn review_movement_import(
                 .push((row.1, row.2, row.3, row.4, row.5, row.6));
         }
         for (item_id, item_rows) in grouped {
-            let baseline = sqlx::query_as::<_, (DateTime<Utc>, Decimal)>("SELECT created_at,balance_after FROM inventory_movements WHERE inventory_item_id=$1 ORDER BY created_at,id LIMIT 1")
-                .bind(item_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
-                .ok_or_else(|| (StatusCode::CONFLICT, "품목에 기준 장부가 없어 가져올 수 없습니다.".to_string()))?;
-            if item_rows.iter().any(|row| row.1 >= baseline.0) {
+            let item_label = item_rows.first().map(|row| row.0.clone()).unwrap_or_default();
+            // 기준 장부는 품목 등록 시점의 initial 이동이다. 이전 가져오기로 추가된 과거 행도 함께 다시 계산한다.
+            let baseline = match sqlx::query_as::<_, (DateTime<Utc>, Decimal)>("SELECT created_at,balance_after FROM inventory_movements WHERE inventory_item_id=$1 AND movement_type='initial' ORDER BY created_at,id LIMIT 1")
+                .bind(item_id).fetch_optional(&mut *transaction).await.map_err(internal_error)? {
+                Some(found) => found,
+                None => sqlx::query_as::<_, (DateTime<Utc>, Decimal)>("SELECT created_at,balance_after FROM inventory_movements WHERE inventory_item_id=$1 ORDER BY created_at,id LIMIT 1")
+                    .bind(item_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
+                    .ok_or_else(|| (StatusCode::CONFLICT, format!("'{}' 품목에 기준 장부가 없어 가져올 수 없습니다.", item_label)))?,
+            };
+            if let Some(late) = item_rows.iter().find(|row| row.1 >= baseline.0) {
                 return Err((
                     StatusCode::CONFLICT,
-                    "기존 최초 장부보다 오래된 거래만 가져올 수 있습니다.".to_string(),
+                    format!("'{}' 품목은 {} 이후 장부가 이미 있어 그보다 과거 거래만 가져올 수 있습니다. (문제 거래일: {})", item_label, baseline.0.format("%Y-%m-%d %H:%M"), late.1.format("%Y-%m-%d %H:%M")),
                 ));
             }
-            let imported_delta = item_rows.iter().map(|row| row.3).sum::<Decimal>();
-            let mut balance = baseline.1 - imported_delta;
+            let existing_before = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Decimal)>("SELECT id,created_at,quantity_delta FROM inventory_movements WHERE inventory_item_id=$1 AND created_at<$2 ORDER BY created_at,id")
+                .bind(item_id).bind(baseline.0).fetch_all(&mut *transaction).await.map_err(internal_error)?;
+            // (타임스킬프, 기존 행 id 또는 신규 행 인덱스, 증감)
+            let mut timeline: Vec<(DateTime<Utc>, Option<Uuid>, usize, Decimal)> = existing_before.iter().map(|row| (row.1, Some(row.0), 0, row.2)).collect();
+            for (index, row) in item_rows.iter().enumerate() {
+                timeline.push((row.1, None, index, row.3));
+            }
+            timeline.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.is_none().cmp(&right.1.is_none())));
+            let total_delta = timeline.iter().map(|entry| entry.3).sum::<Decimal>();
+            let mut balance = baseline.1 - total_delta;
             if balance < Decimal::ZERO {
                 return Err((
                     StatusCode::CONFLICT,
-                    "가져온 내역을 역산하면 기초 재고가 음수가 됩니다.".to_string(),
+                    format!("'{}' 품목: 가져온 내역을 역산하면 기초 재고가 음수({})가 됩니다. 입고/출고 수량이나 기초재고를 확인하세요.", item_label, balance.round_dp(2).normalize()),
                 ));
             }
-            for row in item_rows {
-                balance += row.3;
+            for (moved_at, existing_id, index, delta) in timeline {
+                balance += delta;
                 if balance < Decimal::ZERO {
                     return Err((
                         StatusCode::CONFLICT,
-                        "과거 거래 중 재고가 음수가 되는 시점이 있습니다.".to_string(),
+                        format!("'{}' 품목: {} 시점에 재고가 음수가 되는 거래가 있습니다.", item_label, moved_at.format("%Y-%m-%d")),
                     ));
                 }
-                sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-                    .bind(&batch.0).bind(item_id).bind(row.0).bind(row.2).bind(row.3).bind(balance).bind(format!("{}{}",row.4,if row.5.is_empty(){String::new()}else{format!(" (참조: {})",row.5)})).bind(format!("historical_import:{}",input.id)).bind(&user.id).bind(&user.email).bind(row.1)
-                    .execute(&mut *transaction).await.map_err(internal_error)?;
+                if let Some(existing_id) = existing_id {
+                    sqlx::query("UPDATE inventory_movements SET balance_after=$1 WHERE id=$2")
+                        .bind(balance).bind(existing_id).execute(&mut *transaction).await.map_err(internal_error)?;
+                } else {
+                    let row = &item_rows[index];
+                    sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+                        .bind(&batch.0).bind(item_id).bind(&row.0).bind(&row.2).bind(row.3).bind(balance).bind(format!("{}{}",row.4,if row.5.is_empty(){String::new()}else{format!(" (참조: {})",row.5)})).bind(format!("historical_import:{}",input.id)).bind(&user.id).bind(&user.email).bind(row.1)
+                        .execute(&mut *transaction).await.map_err(internal_error)?;
+                }
             }
             if balance != baseline.1 {
                 return Err((
                     StatusCode::CONFLICT,
-                    "과거 거래 잔액 검증에 실패했습니다.".to_string(),
+                    format!("'{}' 품목: 과거 거래 잔액 검증에 실패했습니다.", item_label),
                 ));
             }
         }
