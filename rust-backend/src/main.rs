@@ -585,7 +585,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             axum::routing::post(submit_movement_import),
         )
         .route("/api/inventory/imports", get(list_movement_imports))
-        .route("/api/inventory/imports/rows", get(list_movement_import_rows))
+        .route(
+            "/api/inventory/imports/rows",
+            get(list_movement_import_rows),
+        )
         .route(
             "/api/inventory/imports/review",
             axum::routing::post(review_movement_import),
@@ -924,9 +927,16 @@ async fn create_inventory(
     }
 
     let db = state.db.ok_or_else(database_not_configured)?;
-    let barcode_value: Option<String> = match input.barcode.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    let barcode_value: Option<String> = match input
+        .barcode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         Some(own) => Some(own.to_string()),
-        None if input.generate_barcode.unwrap_or(false) => Some(generate_barcode(&db, &input.warehouse_id).await?),
+        None if input.generate_barcode.unwrap_or(false) => {
+            Some(generate_barcode(&db, &input.warehouse_id).await?)
+        }
         None => None,
     };
     let mut transaction = db.begin().await.map_err(internal_error)?;
@@ -1181,11 +1191,22 @@ async fn set_safety_stock_mode(
         if !safety_stock_data_is_eligible(history.len(), recent_outbound_days) {
             let pending_imports = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_movement_import_batches WHERE warehouse_id=$1 AND status='PENDING'")
                 .bind(&warehouse_id).fetch_one(&mut *transaction).await.map_err(internal_error)?;
-            let hint = if pending_imports > 0 { format!(" 승인 대기 중인 가져오기 {}건은 승인 후 반영됩니다.", pending_imports) } else { String::new() };
+            let hint = if pending_imports > 0 {
+                format!(
+                    " 승인 대기 중인 가져오기 {}건은 승인 후 반영됩니다.",
+                    pending_imports
+                )
+            } else {
+                String::new()
+            };
             let last_outbound = sqlx::query_scalar::<_, Option<DateTime<Utc>>>("SELECT MAX(created_at) FROM inventory_movements WHERE inventory_item_id=$1 AND movement_type='outbound'")
                 .bind(input.id).fetch_one(&mut *transaction).await.map_err(internal_error)?;
             let hint = match last_outbound {
-                Some(at) if recent_outbound_days == 0 => format!("{} 가장 최근 출고 기록은 {}이며, 자동 계산은 최근 28일의 출고를 사용합니다.", hint, at.format("%Y-%m-%d")),
+                Some(at) if recent_outbound_days == 0 => format!(
+                    "{} 가장 최근 출고 기록은 {}이며, 자동 계산은 최근 28일의 출고를 사용합니다.",
+                    hint,
+                    at.format("%Y-%m-%d")
+                ),
                 _ => hint,
             };
             return Err((StatusCode::CONFLICT, format!("자동 안전재고를 계산하려면 완료일 35일 이상과 최근 28일 중 출고 기록일 5일 이상이 필요합니다. 현재 완료일 {}일, 최근 출고 기록일 {}일입니다.{}", history.len(), recent_outbound_days, hint)));
@@ -1335,7 +1356,8 @@ async fn submit_movement_import(
     }
 
     let mut duplicate_movements = Vec::new();
-    let mut anchors: std::collections::HashMap<Uuid, Option<DateTime<Utc>>> = std::collections::HashMap::new();
+    let mut anchors: std::collections::HashMap<Uuid, Option<DateTime<Utc>>> =
+        std::collections::HashMap::new();
     for (row_index, row) in input.rows.into_iter().enumerate() {
         let source_row = row.source_row.unwrap_or(row_index + 2);
         if !matches!(
@@ -1374,11 +1396,20 @@ async fn submit_movement_import(
         } else { None }
             .ok_or_else(|| (StatusCode::BAD_REQUEST, "inventory item is unavailable in this warehouse".to_string()))?;
         let entered_unit = row.quantity_unit.as_deref().unwrap_or(&item.2);
-        let multiplier = unit_multiplier(entered_unit, &item.2, item.3.as_deref(), item.4, item.5.as_deref(), item.6)
-            .ok_or_else(|| (
+        let multiplier = unit_multiplier(
+            entered_unit,
+            &item.2,
+            item.3.as_deref(),
+            item.4,
+            item.5.as_deref(),
+            item.6,
+        )
+        .ok_or_else(|| {
+            (
                 StatusCode::BAD_REQUEST,
                 format!("unit '{}' does not match item '{}'", entered_unit, item.1),
-            ))?;
+            )
+        })?;
         let magnitude = row.quantity.abs() * multiplier;
         let delta = match row.movement_type.as_str() {
             "inbound" => magnitude,
@@ -1453,12 +1484,28 @@ async fn list_inventory_ledger(
         .unwrap_or_else(|| "wh_wjmals".to_string());
     let limit = query.limit.unwrap_or(2000).clamp(1, 20000);
     let days = query.days.map(|value| value.clamp(1, 3650));
-    let operator = query.operator.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let operator = query
+        .operator
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let system_only = operator == Some("시스템");
     let operator = operator.filter(|_| !system_only);
-    let source = query.source.as_deref().map(str::trim).filter(|value| !value.is_empty());
-    let movement_type = query.movement_type.as_deref().map(str::trim).filter(|value| !value.is_empty());
-    let item = query.item.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let source = query
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let movement_type = query
+        .movement_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let item = query
+        .item
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let rows = sqlx::query_as::<_, (Uuid, String, String, Decimal, Decimal, String, String, Option<String>, DateTime<Utc>)>(
         "SELECT id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_email,created_at FROM inventory_movements
           WHERE warehouse_id=$1
@@ -1508,7 +1555,10 @@ async fn list_movement_import_rows(
     ).bind(query.batch_id).fetch_optional(&db).await.map_err(internal_error)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "가져오기 배치를 찾을 수 없습니다.".to_string()))?;
     if user.role != "서버 관리자" && user.warehouse_id.as_deref() != Some(batch.0.as_str()) {
-        return Err((StatusCode::FORBIDDEN, "다른 창고의 배치는 볼 수 없습니다.".to_string()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "다른 창고의 배치는 볼 수 없습니다.".to_string(),
+        ));
     }
     let rows = sqlx::query_as::<_, (String, DateTime<Utc>, String, Decimal, String, String)>(
         "SELECT item_name,occurred_at,movement_type,quantity_delta,note,reference FROM inventory_movement_import_rows WHERE batch_id=$1 ORDER BY occurred_at,id LIMIT 20000",
@@ -1523,7 +1573,10 @@ async fn list_movement_import_rows(
     })))
 }
 
-async fn generate_barcode(db: &sqlx::PgPool, warehouse_id: &str) -> Result<String, (StatusCode, String)> {
+async fn generate_barcode(
+    db: &sqlx::PgPool,
+    warehouse_id: &str,
+) -> Result<String, (StatusCode, String)> {
     for _ in 0..10 {
         let candidate = format!("WMS{:010}", rand::thread_rng().next_u64() % 10_000_000_000);
         let taken = sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM inventory_items WHERE warehouse_id=$1 AND barcode=$2 AND archived_at IS NULL)")
@@ -1532,7 +1585,10 @@ async fn generate_barcode(db: &sqlx::PgPool, warehouse_id: &str) -> Result<Strin
             return Ok(candidate);
         }
     }
-    Err((StatusCode::INTERNAL_SERVER_ERROR, "바코드를 생성하지 못했습니다. 다시 시도하세요.".to_string()))
+    Err((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "바코드를 생성하지 못했습니다. 다시 시도하세요.".to_string(),
+    ))
 }
 
 async fn review_movement_import(
@@ -1613,7 +1669,171 @@ async fn review_movement_import(
                 .push((row.1, row.2, row.3, row.4, row.5, row.6));
         }
         for (item_id, item_rows) in grouped {
-            let item_label = item_rows.first().map(|row| row.0.clone()).unwrap_or_default();
+            let item_label = item_rows
+                .first()
+                .map(|row| row.0.clone())
+                .unwrap_or_default();
+            let archived_item = sqlx::query_as::<_, (Option<DateTime<Utc>>, Decimal)>(
+                "SELECT archived_at,current FROM inventory_items WHERE id=$1 AND warehouse_id=$2 FOR UPDATE",
+            )
+            .bind(item_id)
+            .bind(&batch.0)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("'{}' 품목을 찾을 수 없습니다.", item_label)))?;
+
+            if let Some(archived_at) = archived_item.0 {
+                if let Some(late) = item_rows.iter().find(|row| row.1 >= archived_at) {
+                    return Err((StatusCode::CONFLICT, format!("'{}' 품목은 보관 시점 이후 거래를 가져올 수 없습니다. (보관 시점: {}, 문제 거래일: {})", item_label, archived_at.format("%Y-%m-%d %H:%M"), late.1.format("%Y-%m-%d %H:%M"))));
+                }
+
+                let baseline = match sqlx::query_as::<_, (DateTime<Utc>, Decimal)>("SELECT created_at,balance_after FROM inventory_movements WHERE inventory_item_id=$1 AND movement_type='initial' ORDER BY created_at,id LIMIT 1")
+                    .bind(item_id).fetch_optional(&mut *transaction).await.map_err(internal_error)? {
+                    Some(found) => found,
+                    None => sqlx::query_as::<_, (DateTime<Utc>, Decimal)>("SELECT created_at,balance_after FROM inventory_movements WHERE inventory_item_id=$1 ORDER BY created_at,id LIMIT 1")
+                        .bind(item_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
+                        .ok_or_else(|| (StatusCode::CONFLICT, format!("'{}' 품목에 기준 장부가 없어 가져올 수 없습니다.", item_label)))?,
+                };
+                let archive = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Decimal, Decimal)>(
+                    "SELECT id,created_at,quantity_delta,balance_after FROM inventory_movements WHERE inventory_item_id=$1 AND source='archive' ORDER BY created_at DESC,id DESC LIMIT 1",
+                )
+                .bind(item_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(internal_error)?;
+                let archive_at = archive.as_ref().map(|row| row.1).unwrap_or(archived_at);
+
+                let existing_before = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Decimal)>("SELECT id,created_at,quantity_delta FROM inventory_movements WHERE inventory_item_id=$1 AND created_at<$2 ORDER BY created_at,id")
+                    .bind(item_id).bind(baseline.0).fetch_all(&mut *transaction).await.map_err(internal_error)?;
+                let mut before_timeline: Vec<(DateTime<Utc>, Option<Uuid>, usize, Decimal)> =
+                    existing_before
+                        .iter()
+                        .map(|row| (row.1, Some(row.0), 0, row.2))
+                        .collect();
+                for (index, row) in item_rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.1 < baseline.0)
+                {
+                    before_timeline.push((row.1, None, index, row.3));
+                }
+                before_timeline.sort_by(|left, right| {
+                    left.0
+                        .cmp(&right.0)
+                        .then(left.1.is_none().cmp(&right.1.is_none()))
+                });
+                let before_deltas = before_timeline
+                    .iter()
+                    .map(|entry| entry.3)
+                    .collect::<Vec<_>>();
+                let (_, before_balances) = match rebuild_movement_balances(
+                    baseline.1,
+                    &before_deltas,
+                ) {
+                    Ok(result) => result,
+                    Err(None) => {
+                        let opening = baseline.1 - before_deltas.iter().copied().sum::<Decimal>();
+                        return Err((
+                            StatusCode::CONFLICT,
+                            format!(
+                                "'{}' 품목: 가져온 거래를 역산하면 기초 재고가 음수({})가 됩니다.",
+                                item_label,
+                                opening.round_dp(2).normalize()
+                            ),
+                        ));
+                    }
+                    Err(Some(index)) => {
+                        return Err((
+                            StatusCode::CONFLICT,
+                            format!(
+                                "'{}' 품목: {} 시점에 재고가 음수가 되는 거래가 있습니다.",
+                                item_label,
+                                before_timeline[index].0.format("%Y-%m-%d %H:%M")
+                            ),
+                        ))
+                    }
+                };
+                for ((_at, existing_id, index, _), balance) in
+                    before_timeline.into_iter().zip(before_balances)
+                {
+                    if let Some(existing_id) = existing_id {
+                        sqlx::query("UPDATE inventory_movements SET balance_after=$1 WHERE id=$2")
+                            .bind(balance)
+                            .bind(existing_id)
+                            .execute(&mut *transaction)
+                            .await
+                            .map_err(internal_error)?;
+                    } else {
+                        let row = &item_rows[index];
+                        sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+                            .bind(&batch.0).bind(item_id).bind(&row.0).bind(&row.2).bind(row.3).bind(balance).bind(format!("{}{}",row.4,if row.5.is_empty(){String::new()}else{format!(" (참조: {})",row.5)})).bind(format!("historical_import:{}",input.id)).bind(&user.id).bind(&user.email).bind(row.1)
+                            .execute(&mut *transaction).await.map_err(internal_error)?;
+                    }
+                }
+
+                let existing_after = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Decimal)>("SELECT id,created_at,quantity_delta FROM inventory_movements WHERE inventory_item_id=$1 AND created_at >= $2 AND created_at < $3 AND movement_type<>'initial' AND source<>'archive' ORDER BY created_at,id")
+                    .bind(item_id).bind(baseline.0).bind(archive_at).fetch_all(&mut *transaction).await.map_err(internal_error)?;
+                let mut after_timeline: Vec<(DateTime<Utc>, Option<Uuid>, usize, Decimal)> =
+                    existing_after
+                        .iter()
+                        .map(|row| (row.1, Some(row.0), 0, row.2))
+                        .collect();
+                for (index, row) in item_rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.1 >= baseline.0)
+                {
+                    after_timeline.push((row.1, None, index, row.3));
+                }
+                after_timeline.sort_by(|left, right| {
+                    left.0
+                        .cmp(&right.0)
+                        .then(left.1.is_none().cmp(&right.1.is_none()))
+                });
+                let after_deltas = after_timeline
+                    .iter()
+                    .map(|entry| entry.3)
+                    .collect::<Vec<_>>();
+                let (remaining_balance, after_balances) =
+                    replay_movement_balances(baseline.1, &after_deltas).map_err(|index| {
+                        (
+                            StatusCode::CONFLICT,
+                            format!(
+                                "'{}' 품목: {} 시점에 재고가 음수가 되는 거래가 있습니다.",
+                                item_label,
+                                after_timeline[index].0.format("%Y-%m-%d %H:%M")
+                            ),
+                        )
+                    })?;
+                for ((_at, existing_id, index, _), balance) in
+                    after_timeline.into_iter().zip(after_balances)
+                {
+                    if let Some(existing_id) = existing_id {
+                        sqlx::query("UPDATE inventory_movements SET balance_after=$1 WHERE id=$2")
+                            .bind(balance)
+                            .bind(existing_id)
+                            .execute(&mut *transaction)
+                            .await
+                            .map_err(internal_error)?;
+                    } else {
+                        let row = &item_rows[index];
+                        sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+                            .bind(&batch.0).bind(item_id).bind(&row.0).bind(&row.2).bind(row.3).bind(balance).bind(format!("{}{}",row.4,if row.5.is_empty(){String::new()}else{format!(" (참조: {})",row.5)})).bind(format!("historical_import:{}",input.id)).bind(&user.id).bind(&user.email).bind(row.1)
+                            .execute(&mut *transaction).await.map_err(internal_error)?;
+                    }
+                }
+                if let Some((archive_id, _, _, _)) = archive {
+                    sqlx::query("UPDATE inventory_movements SET quantity_delta=$1,balance_after=0,note=note || ' (과거 거래 승인 후 잔액 재계산)' WHERE id=$2")
+                        .bind(-remaining_balance).bind(archive_id).execute(&mut *transaction).await.map_err(internal_error)?;
+                } else if remaining_balance > Decimal::ZERO {
+                    sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,'adjustment',$4,0,'보관 품목의 과거 장부 승인 후 잔량 정리','archive_reconciliation',$5,$6,$7)")
+                        .bind(&batch.0).bind(item_id).bind(&item_label).bind(-remaining_balance).bind(&user.id).bind(&user.email).bind(archived_at)
+                        .execute(&mut *transaction).await.map_err(internal_error)?;
+                }
+                continue;
+            }
+
             // 기준 장부는 품목 등록 시점의 initial 이동이다. 이전 가져오기로 추가된 과거 행도 함께 다시 계산한다.
             let baseline = match sqlx::query_as::<_, (DateTime<Utc>, Decimal)>("SELECT created_at,balance_after FROM inventory_movements WHERE inventory_item_id=$1 AND movement_type='initial' ORDER BY created_at,id LIMIT 1")
                 .bind(item_id).fetch_optional(&mut *transaction).await.map_err(internal_error)? {
@@ -1631,11 +1851,18 @@ async fn review_movement_import(
             let existing_before = sqlx::query_as::<_, (Uuid, DateTime<Utc>, Decimal)>("SELECT id,created_at,quantity_delta FROM inventory_movements WHERE inventory_item_id=$1 AND created_at<$2 ORDER BY created_at,id")
                 .bind(item_id).bind(baseline.0).fetch_all(&mut *transaction).await.map_err(internal_error)?;
             // (타임스킬프, 기존 행 id 또는 신규 행 인덱스, 증감)
-            let mut timeline: Vec<(DateTime<Utc>, Option<Uuid>, usize, Decimal)> = existing_before.iter().map(|row| (row.1, Some(row.0), 0, row.2)).collect();
+            let mut timeline: Vec<(DateTime<Utc>, Option<Uuid>, usize, Decimal)> = existing_before
+                .iter()
+                .map(|row| (row.1, Some(row.0), 0, row.2))
+                .collect();
             for (index, row) in item_rows.iter().enumerate() {
                 timeline.push((row.1, None, index, row.3));
             }
-            timeline.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.is_none().cmp(&right.1.is_none())));
+            timeline.sort_by(|left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then(left.1.is_none().cmp(&right.1.is_none()))
+            });
             let total_delta = timeline.iter().map(|entry| entry.3).sum::<Decimal>();
             let mut balance = baseline.1 - total_delta;
             if balance < Decimal::ZERO {
@@ -1649,12 +1876,20 @@ async fn review_movement_import(
                 if balance < Decimal::ZERO {
                     return Err((
                         StatusCode::CONFLICT,
-                        format!("'{}' 품목: {} 시점에 재고가 음수가 되는 거래가 있습니다.", item_label, moved_at.format("%Y-%m-%d")),
+                        format!(
+                            "'{}' 품목: {} 시점에 재고가 음수가 되는 거래가 있습니다.",
+                            item_label,
+                            moved_at.format("%Y-%m-%d")
+                        ),
                     ));
                 }
                 if let Some(existing_id) = existing_id {
                     sqlx::query("UPDATE inventory_movements SET balance_after=$1 WHERE id=$2")
-                        .bind(balance).bind(existing_id).execute(&mut *transaction).await.map_err(internal_error)?;
+                        .bind(balance)
+                        .bind(existing_id)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(internal_error)?;
                 } else {
                     let row = &item_rows[index];
                     sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
@@ -1889,6 +2124,35 @@ fn safety_stock_data_is_eligible(completed_days: usize, recent_outbound_days: us
     completed_days >= 35 && recent_outbound_days >= 5
 }
 
+fn replay_movement_balances(
+    opening_balance: Decimal,
+    deltas: &[Decimal],
+) -> Result<(Decimal, Vec<Decimal>), usize> {
+    let mut balance = opening_balance;
+    let mut balances = Vec::with_capacity(deltas.len());
+    for (index, delta) in deltas.iter().enumerate() {
+        balance += delta;
+        if balance < Decimal::ZERO {
+            return Err(index);
+        }
+        balances.push(balance);
+    }
+    Ok((balance, balances))
+}
+
+fn rebuild_movement_balances(
+    target_balance: Decimal,
+    deltas: &[Decimal],
+) -> Result<(Decimal, Vec<Decimal>), Option<usize>> {
+    let opening_balance = target_balance - deltas.iter().copied().sum::<Decimal>();
+    if opening_balance < Decimal::ZERO {
+        return Err(None);
+    }
+    replay_movement_balances(opening_balance, deltas)
+        .map(|(_, balances)| (opening_balance, balances))
+        .map_err(Some)
+}
+
 fn unit_multiplier(
     entered: &str,
     unit: &str,
@@ -1993,8 +2257,8 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 mod tests {
     use super::{
         calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
-        evaluate_moving_average, next_delivery_state, safety_stock_data_is_eligible,
-        AuthenticatedUser,
+        evaluate_moving_average, next_delivery_state, rebuild_movement_balances,
+        replay_movement_balances, safety_stock_data_is_eligible, AuthenticatedUser,
     };
     use rust_decimal::Decimal;
 
@@ -2131,6 +2395,36 @@ mod tests {
         assert!(safety_stock_data_is_eligible(35, 5));
         assert!(safety_stock_data_is_eligible(90, 28));
     }
+
+    #[test]
+    fn archived_item_history_replays_before_zeroing_archive_balance() {
+        let historical = [Decimal::from(20), Decimal::from(-5)];
+        let (remaining, balances) =
+            replay_movement_balances(Decimal::from(100), &historical).unwrap();
+        assert_eq!(balances, vec![Decimal::from(120), Decimal::from(115)]);
+        assert_eq!(remaining + (-remaining), Decimal::ZERO);
+
+        let prior_to_initial = [Decimal::from(-10), Decimal::from(20)];
+        let (opening, prior_balances) =
+            rebuild_movement_balances(Decimal::from(100), &prior_to_initial).unwrap();
+        assert_eq!(opening, Decimal::from(90));
+        assert_eq!(prior_balances, vec![Decimal::from(80), Decimal::from(100)]);
+    }
+
+    #[test]
+    fn archived_item_history_rejects_negative_intermediate_balance() {
+        assert_eq!(
+            replay_movement_balances(
+                Decimal::from(100),
+                &[Decimal::from(-120), Decimal::from(20)]
+            ),
+            Err(0)
+        );
+        assert_eq!(
+            rebuild_movement_balances(Decimal::from(5), &[Decimal::from(10)]),
+            Err(None)
+        );
+    }
 }
 
 fn database_not_configured() -> (StatusCode, String) {
@@ -2173,7 +2467,9 @@ async fn users_action(
             let admin_email = if role == "관리자" {
                 None
             } else {
-                let requested_admin = required(input.admin_email, "adminEmail")?.trim().to_lowercase();
+                let requested_admin = required(input.admin_email, "adminEmail")?
+                    .trim()
+                    .to_lowercase();
                 let approved_manager = sqlx::query_scalar::<_, String>(
                     "SELECT email FROM users WHERE lower(email)=$1 AND role='관리자' AND status='APPROVED' AND warehouse_id IS NOT NULL",
                 ).bind(&requested_admin).fetch_optional(&db).await.map_err(internal_error)?;
@@ -2677,7 +2973,11 @@ async fn list_zones(
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|value| value.as_str().map(str::to_owned))
-                .filter(|item| inventory.iter().any(|(name, _, _)| name.eq_ignore_ascii_case(item)))
+                .filter(|item| {
+                    inventory
+                        .iter()
+                        .any(|(name, _, _)| name.eq_ignore_ascii_case(item))
+                })
                 .collect::<Vec<_>>();
             let current_stock_sum = inventory
                 .iter()
@@ -3410,11 +3710,20 @@ async fn review_vision_estimate(
             .bind(item_id).bind(&estimate.0).fetch_optional(&mut *transaction).await.map_err(internal_error)?
             .ok_or_else(|| (StatusCode::NOT_FOUND, "활성 재고 품목을 찾을 수 없습니다.".to_string()))?;
         let quantity = estimate.3
-            * unit_multiplier(&estimate.4, &item.3, item.4.as_deref(), item.5, item.6.as_deref(), item.7)
-                .ok_or_else(|| (
+            * unit_multiplier(
+                &estimate.4,
+                &item.3,
+                item.4.as_deref(),
+                item.5,
+                item.6.as_deref(),
+                item.7,
+            )
+            .ok_or_else(|| {
+                (
                     StatusCode::BAD_REQUEST,
                     "비전 단위가 품목의 기준/포장/파렛 단위와 일치하지 않습니다.".to_string(),
-                ))?;
+                )
+            })?;
         let (status, status_label, diff_text, recommendation) =
             classify_stock(quantity, item.2, &item.3);
         sqlx::query("UPDATE inventory_items SET current=$1,status=$2,status_label=$3,diff_text=$4,recommendation=$5,updated_at=now() WHERE id=$6")
