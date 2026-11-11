@@ -9,9 +9,7 @@ services:
       - key: PORT
         value: 8080
       - key: DATABASE_URL
-        fromDatabase:
-          name: wms-postgres-db
-          property: connectionString
+        sync: false
       - key: JWT_SECRET
         value: 697ce25ee328fcc7dd9dce509bd37577ac76db587ea7666a6e13bed1dd8d6ddd
       - key: SUPER_ADMIN_PASSWORD
