@@ -228,7 +228,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
     const guideRows: Array<[string, string]> = [
       ['시트 구성', '[거래입력] 시트에 한 줄에 거래 1건을 입력합니다. [품목목록]·[작성방법]은 참고용이며 업로드되지 않습니다.'],
       ['거래일시', '2026-01-15 또는 2026-01-15 09:00 형식. 오늘 이후 날짜는 불가.'],
-      ['품목명', '[품목목록]의 이름과 같게 입력합니다. 기존 품목이 없으면 유형을 "기초재고"로 한 줄 먼저 입력하세요(신규 품목 등록).'],
+      ['품목명', '[품목목록]의 이름과 같게 입력합니다. 신규 품목은 자동 등록되며 기초재고가 없으면 0부터 계산합니다.'],
       ['유형', '기초재고 / 입고 / 출고 / 조정 / 비전추정 중 선택. 입고·출고는 양수로 입력, 조정·비전추정은 증가(+)/감소(-) 부호를 그대로 입력합니다.'],
       ['수량', '0은 입력하지 마세요(자동 제외). 소수는 둘째 자리까지 권장합니다.'],
       ['단위', '비우면 품목의 기본 단위(ea)로 처리합니다. 박스/파렛트 단위를 쓰면 등록된 환산값으로 ea로 계산됩니다.'],
@@ -338,6 +338,29 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         }
         return undefined;
       };
+      const itemUnits = new Map<string, { unit: string; conversions: Map<string, number> }>();
+      const itemSheet = workbook.getWorksheet('품목목록');
+      if (itemSheet) {
+        const itemHeaders = (itemSheet.getRow(1).values as ExcelJS.CellValue[]).slice(1).map((value) => normalizeKey(cellText(value)));
+        itemSheet.eachRow((row, rowNumber) => {
+          if (rowNumber === 1) return;
+          const record: SheetRow = {};
+          itemHeaders.forEach((header, columnIndex) => { if (header) record[header] = row.getCell(columnIndex + 1).value; });
+          const name = cellText(find(record, '품목명', 'itemName', 'name')).trim();
+          const unit = cellText(find(record, '기본 단위', 'baseUnit', 'unit')).trim();
+          if (!name || !unit) return;
+          const conversions = new Map<string, number>();
+          for (const [unitValue, sizeValue] of [
+            [find(record, '박스 단위', 'packageUnit'), find(record, '박스당 수량', 'packageSize')],
+            [find(record, '파렛트 단위', 'palletUnit'), find(record, '파렛트당 수량', 'palletSize')],
+          ]) {
+            const convertedUnit = cellText(unitValue).trim();
+            const size = Number(cellText(sizeValue).replaceAll(',', '').trim());
+            if (convertedUnit && Number.isFinite(size) && size > 0) conversions.set(normalizeKey(convertedUnit), size);
+          }
+          itemUnits.set(normalizeKey(name), { unit, conversions });
+        });
+      }
       const parseEntry = (record: SheetRow, index: number) => {
         const id = cellText(find(record, 'inventoryItemId', 'inventory_item_id', 'inventoryId', 'itemId', 'id', '품목 ID', '품목코드', '상품코드'));
         const name = cellText(find(record, 'itemName', 'productName', 'name', 'item', '품목명', '상품명', '품목'));
@@ -364,8 +387,21 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         if (entry.quantity < 0) throw new Error(`${rowNumbers[entry.index]}행: 기초재고 수량은 음수일 수 없습니다.`);
         const key = normalizeKey(entry.name);
         if (seedItems.has(key)) throw new Error(`${rowNumbers[entry.index]}행: '${entry.name}'의 기초재고 행이 중복되었습니다.`);
-        const unit = cellText(find(entry.record, 'quantityUnit', 'unit', '단위')).trim() || 'ea';
-        seedItems.set(key, { name: entry.name.trim(), current: entry.quantity, safe: 0, unit, barcode: entry.barcode || undefined });
+        const unitInfo = itemUnits.get(key);
+        const unit = unitInfo?.unit || cellText(find(entry.record, 'quantityUnit', 'unit', '단위')).trim() || 'ea';
+        const enteredUnit = cellText(find(entry.record, 'quantityUnit', 'unit', '단위')).trim() || unit;
+        const multiplier = normalizeKey(enteredUnit) === normalizeKey(unit) ? 1 : unitInfo?.conversions.get(normalizeKey(enteredUnit));
+        if (!multiplier) throw new Error(`${rowNumbers[entry.index]}행: '${entry.name}'의 단위 '${enteredUnit}'를 '${unit}'로 환산할 수 없습니다. 품목목록의 환산 수량을 확인하세요.`);
+        seedItems.set(key, { name: entry.name.trim(), current: entry.quantity * multiplier, safe: 0, unit, barcode: entry.barcode || undefined });
+      }
+
+      for (const entry of entries) {
+        if (entry.movementType === 'initial' || entry.quantity === 0 || findExistingItem(entry)) continue;
+        if (!entry.name) throw new Error(`${rowNumbers[entry.index]}행: 신규 품목명이 필요합니다.`);
+        const key = normalizeKey(entry.name);
+        if (seedItems.has(key)) continue;
+        const unit = itemUnits.get(key)?.unit || cellText(find(entry.record, 'quantityUnit', 'unit', '단위')).trim() || 'ea';
+        seedItems.set(key, { name: entry.name.trim(), current: 0, safe: 0, unit, barcode: entry.barcode || undefined });
       }
 
       const payloadRows: Array<Record<string, unknown>> = [];
@@ -397,8 +433,25 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
         } catch {
           throw new Error(`${rowNumbers[entry.index]}행: 거래일시를 읽을 수 없습니다.`);
         }
-        const quantityUnit = cellText(find(entry.record, 'quantityUnit', 'unit', '단위')).trim() || existing?.unit || seed?.unit || 'ea';
+        let quantityUnit = cellText(find(entry.record, 'quantityUnit', 'unit', '단위')).trim() || existing?.unit || seed?.unit || 'ea';
+        const baseUnit = existing?.unit || seed?.unit;
+        const unitInfo = itemUnits.get(normalizeKey(existing?.name || entry.name));
+        if (baseUnit && normalizeKey(quantityUnit) === normalizeKey(baseUnit)) {
+          quantityUnit = baseUnit;
+        } else if (existing?.packageUnit && normalizeKey(quantityUnit) === normalizeKey(existing.packageUnit)) {
+          quantityUnit = existing.packageUnit;
+        } else if (existing?.palletUnit && normalizeKey(quantityUnit) === normalizeKey(existing.palletUnit)) {
+          quantityUnit = existing.palletUnit;
+        } else if (baseUnit && unitInfo && normalizeKey(unitInfo.unit) === normalizeKey(baseUnit)) {
+          const multiplier = unitInfo.conversions.get(normalizeKey(quantityUnit));
+          if (multiplier) {
+            entry.quantity *= multiplier;
+            quantityUnit = baseUnit;
+          }
+        }
         if (seed) {
+          if (normalizeKey(quantityUnit) !== normalizeKey(seed.unit)) throw new Error(`${rowNumbers[entry.index]}행: '${seed.name}'의 단위 '${quantityUnit}'를 '${seed.unit}'로 환산할 수 없습니다. 품목목록의 환산 수량을 확인하세요.`);
+          quantityUnit = seed.unit;
           const delta = entry.movementType === 'outbound' ? -Math.abs(entry.quantity) : entry.quantity;
           seed.current += delta;
           if (seed.current < 0) throw new Error(`${rowNumbers[entry.index]}행: '${seed.name}'의 기초재고와 거래 이력을 계산하면 현재 재고가 음수가 됩니다.`);
@@ -569,7 +622,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
             </label>
             <button disabled={!file || busy || !inventoryLoaded || !!inventoryLoadError} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '처리 중' : '승인 요청'}</button>
           </div>
-          {inventoryLoadError ? <p role="alert" className="text-xs text-red-600">{inventoryLoadError}</p> : !inventoryLoaded ? <p role="status" className="text-xs text-textMuted">현재 창고 품목을 불러오는 중입니다.</p> : items.length === 0 ? <p role="status" className="text-xs text-amber-700">현재 창고에 등록된 품목이 없습니다.</p> : null}
+          {inventoryLoadError ? <p role="alert" className="text-xs text-red-600">{inventoryLoadError}</p> : !inventoryLoaded ? <p role="status" className="text-xs text-textMuted">현재 창고 품목을 불러오는 중입니다.</p> : items.length === 0 ? <p role="status" className="text-xs text-amber-700">현재 창고에 등록된 품목이 없습니다. 엑셀의 신규 품목은 승인 후 등록됩니다.</p> : null}
           {unsetItems.length > 0 && (
             <div role="alert" className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
               <p className="flex items-center gap-2 font-bold"><AlertTriangle size={15} />안전재고 미설정 품목 {unsetItems.length}개</p>

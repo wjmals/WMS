@@ -36,3 +36,5 @@ Thumbs.db
 .firebase/
 .firebaserc
 
+.vercel
+.env*

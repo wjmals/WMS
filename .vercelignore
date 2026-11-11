@@ -1,0 +1,14 @@
+rust-backend/
+docs/
+admin_console/
+cv_client/
+db/
+/*api/
+render.yaml
+docker-compose.yml
+Dockerfile
+start-wms.sh
+수정
+frontend/node_modules/
+frontend/.next/
+frontend/.env*
