@@ -1093,16 +1093,11 @@ async fn update_inventory(
             .execute(&mut *transaction).await.map_err(internal_error)?;
     }
     if item.safety_stock_mode == "auto" && movement_type == "outbound" && delta < Decimal::ZERO {
-        let recent_rows = sqlx::query_as::<_, (chrono::NaiveDate, Decimal)>(
-            "SELECT calendar.day::date,
-                    COALESCE(SUM(CASE WHEN m.movement_type='outbound' THEN -m.quantity_delta ELSE 0 END),0)::numeric
-               FROM generate_series(current_date-28,current_date-1,interval '1 day') calendar(day)
-               LEFT JOIN inventory_movements m ON m.inventory_item_id=$1 AND m.created_at>=calendar.day AND m.created_at<calendar.day+interval '1 day'
-              GROUP BY calendar.day ORDER BY calendar.day",
-        ).bind(item.id).fetch_all(&mut *transaction).await.map_err(internal_error)?;
-        let daily = recent_rows.iter().map(|row| row.1).collect::<Vec<_>>();
+        let daily = load_safety_stock_history(&mut transaction, item.id)
+            .await
+            .map_err(internal_error)?;
         let active_days = daily.iter().filter(|value| **value > Decimal::ZERO).count();
-        if active_days >= 5 {
+        if safety_stock_data_is_eligible(daily.len(), active_days) {
             if let Some(recommended) = calculate_safety_stock(
                 &daily,
                 item.safety_stock_lead_time_days,
@@ -1169,24 +1164,14 @@ async fn set_safety_stock_mode(
         ));
     }
     let safe = if input.mode == "auto" {
-        let history = sqlx::query_as::<_, (chrono::NaiveDate, Decimal)>(
-            "WITH coverage AS (
-                SELECT COALESCE(MIN(m.created_at)::date, current_date) AS starts
-                  FROM inventory_items i LEFT JOIN inventory_movements m ON m.inventory_item_id=i.id AND m.movement_type='outbound'
-                 WHERE i.id=$1 AND i.warehouse_id=$2
-             )
-             SELECT calendar.day::date,
-                    COALESCE(SUM(CASE WHEN m.movement_type='outbound' THEN -m.quantity_delta ELSE 0 END),0)::numeric
-               FROM coverage c
-               CROSS JOIN LATERAL generate_series(GREATEST(c.starts,current_date-89),current_date-1,interval '1 day') calendar(day)
-               LEFT JOIN inventory_movements m ON m.inventory_item_id=$1 AND m.created_at>=calendar.day AND m.created_at<calendar.day+interval '1 day'
-              GROUP BY calendar.day ORDER BY calendar.day",
-        ).bind(input.id).bind(&warehouse_id).fetch_all(&mut *transaction).await.map_err(internal_error)?;
+        let history = load_safety_stock_history(&mut transaction, input.id)
+            .await
+            .map_err(internal_error)?;
         let recent_outbound_days = history
             .iter()
             .rev()
-            .take(28)
-            .filter(|(_, value)| *value > Decimal::ZERO)
+            .take(180)
+            .filter(|value| **value > Decimal::ZERO)
             .count();
         if !safety_stock_data_is_eligible(history.len(), recent_outbound_days) {
             let pending_imports = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory_movement_import_batches WHERE warehouse_id=$1 AND status='PENDING'")
@@ -1203,21 +1188,15 @@ async fn set_safety_stock_mode(
                 .bind(input.id).fetch_one(&mut *transaction).await.map_err(internal_error)?;
             let hint = match last_outbound {
                 Some(at) if recent_outbound_days == 0 => format!(
-                    "{} 가장 최근 출고 기록은 {}이며, 자동 계산은 최근 28일의 출고를 사용합니다.",
+                    "{} 가장 최근 출고 기록은 {}이며, 자동 계산은 최근 180일의 출고를 사용합니다.",
                     hint,
                     at.format("%Y-%m-%d")
                 ),
                 _ => hint,
             };
-            return Err((StatusCode::CONFLICT, format!("자동 안전재고를 계산하려면 완료일 35일 이상과 최근 28일 중 출고 기록일 5일 이상이 필요합니다. 현재 완료일 {}일, 최근 출고 기록일 {}일입니다.{}", history.len(), recent_outbound_days, hint)));
+            return Err((StatusCode::CONFLICT, format!("자동 안전재고를 계산하려면 완료일 35일 이상과 최근 180일 중 출고 기록일 5일 이상이 필요합니다. 현재 완료일 {}일, 최근 출고 기록일 {}일입니다.{}", history.len(), recent_outbound_days, hint)));
         }
-        let recent = history
-            .iter()
-            .rev()
-            .take(28)
-            .map(|(_, value)| *value)
-            .collect::<Vec<_>>();
-        calculate_safety_stock(&recent, lead_time_days, item.5).ok_or_else(|| {
+        calculate_safety_stock(&history, lead_time_days, item.5).ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
                 "안전재고 추천값을 계산할 수 없습니다.".to_string(),
@@ -1954,6 +1933,7 @@ async fn list_inventory_forecast(
         .warehouse_id
         .unwrap_or_else(|| "wh_wjmals".to_string());
     let history_days = query.history_days.unwrap_or(90).clamp(35, 365);
+    let safety_history_days = history_days.max(181);
     let rows = sqlx::query_as::<_, (Uuid, String, String, Decimal, String, bool, i32, Decimal, chrono::NaiveDate, Decimal)>(
         "WITH item_coverage AS (
             SELECT i.id, i.name, i.unit, i.safe, i.safety_stock_mode, i.safety_stock_prompted, i.safety_stock_lead_time_days, i.safety_stock_service_level,
@@ -1976,7 +1956,7 @@ async fn list_inventory_forecast(
                 AND m.created_at < calendar.day + interval '1 day'
           GROUP BY c.id, c.name, c.unit, c.safe, c.safety_stock_mode, c.safety_stock_prompted, c.safety_stock_lead_time_days, c.safety_stock_service_level, calendar.day
           ORDER BY c.name, calendar.day",
-    ).bind(&warehouse_id).bind(history_days).fetch_all(&db).await.map_err(internal_error)?;
+    ).bind(&warehouse_id).bind(safety_history_days).fetch_all(&db).await.map_err(internal_error)?;
 
     let mut grouped: std::collections::BTreeMap<
         Uuid,
@@ -2002,19 +1982,22 @@ async fn list_inventory_forecast(
     let mut aggregate_samples = 0_usize;
     let mut eligible_items = 0_usize;
     let items = grouped.into_iter().map(|(id, (name, unit, safe, safety_stock_mode, safety_stock_prompted, lead_time_days, service_level, daily_outbound))| {
-        let history_count = daily_outbound.len();
-        let outbound_days = daily_outbound.iter().rev().take(28).filter(|value| **value > Decimal::ZERO).count();
-        let safety_stock_eligible = safety_stock_data_is_eligible(history_count, outbound_days);
+        let history_count = daily_outbound.len().min((history_days - 1) as usize);
+        let forecast_history = &daily_outbound[daily_outbound.len() - history_count..];
+        let safety_stock_history_days = daily_outbound.len().min(180);
+        let outbound_days = daily_outbound.iter().rev().take(180).filter(|value| **value > Decimal::ZERO).count();
+        let safety_stock_eligible = safety_stock_data_is_eligible(safety_stock_history_days, outbound_days);
         let suggested_safe = if safety_stock_eligible {
             calculate_safety_stock(&daily_outbound, lead_time_days, service_level)
         } else { None };
-        let Some((forecast_total, mape, sample_days)) = evaluate_moving_average(&daily_outbound, TRAINING_DAYS, HOLDOUT_DAYS) else {
+        let Some((forecast_total, mape, sample_days)) = evaluate_moving_average(forecast_history, TRAINING_DAYS, HOLDOUT_DAYS) else {
             return serde_json::json!({
                 "itemId": id,
                 "itemName": name,
                 "unit": unit,
                 "safe": safe,
                 "historyDays": history_count,
+                "safetyStockHistoryDays": safety_stock_history_days,
                 "outboundDays": outbound_days,
                 "safetyStockMode": safety_stock_mode,
                 "safetyStockPrompted": safety_stock_prompted,
@@ -2022,7 +2005,7 @@ async fn list_inventory_forecast(
                 "safetyStockServiceLevel": service_level,
                 "safetyStockEligible": safety_stock_eligible,
                 "suggestedSafetyStock": suggested_safe,
-                "safetyStockFormula": "Z × σ(daily outbound, last 28 complete days) × √(lead time days)",
+                "safetyStockFormula": "Z × σ(daily outbound, up to 180 complete days) × √(lead time days)",
                 "status": "insufficient_data",
                 "requiredDays": TRAINING_DAYS + HOLDOUT_DAYS,
                 "forecastOutflow7d": Value::Null,
@@ -2042,6 +2025,7 @@ async fn list_inventory_forecast(
             "unit": unit,
             "safe": safe,
             "historyDays": history_count,
+            "safetyStockHistoryDays": safety_stock_history_days,
             "outboundDays": outbound_days,
             "safetyStockMode": safety_stock_mode,
             "safetyStockPrompted": safety_stock_prompted,
@@ -2049,7 +2033,7 @@ async fn list_inventory_forecast(
             "safetyStockServiceLevel": service_level,
             "safetyStockEligible": safety_stock_eligible,
             "suggestedSafetyStock": suggested_safe,
-            "safetyStockFormula": "Z × σ(daily outbound, last 28 complete days) × √(lead time days)",
+            "safetyStockFormula": "Z × σ(daily outbound, up to 180 complete days) × √(lead time days)",
             "status": if mape.is_some() { "backtest_available" } else { "no_nonzero_backtest_days" },
             "forecastOutflow7d": forecast_total,
             "mapePct": mape,
@@ -2083,6 +2067,25 @@ async fn list_inventory_forecast(
     })))
 }
 
+async fn load_safety_stock_history(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    item_id: Uuid,
+) -> Result<Vec<Decimal>, sqlx::Error> {
+    let rows = sqlx::query_scalar::<_, Decimal>(
+        "WITH coverage AS (
+            SELECT COALESCE(MIN(m.created_at)::date, i.created_at::date) AS starts
+              FROM inventory_items i LEFT JOIN inventory_movements m ON m.inventory_item_id=i.id
+             WHERE i.id=$1 GROUP BY i.id
+         )
+         SELECT COALESCE(SUM(CASE WHEN m.movement_type='outbound' THEN -m.quantity_delta ELSE 0 END),0)::numeric
+           FROM coverage c
+           CROSS JOIN LATERAL generate_series(GREATEST(c.starts,current_date-180),current_date-1,interval '1 day') calendar(day)
+           LEFT JOIN inventory_movements m ON m.inventory_item_id=$1 AND m.created_at>=calendar.day AND m.created_at<calendar.day+interval '1 day'
+          GROUP BY calendar.day ORDER BY calendar.day",
+    ).bind(item_id).fetch_all(&mut **transaction).await?;
+    Ok(rows)
+}
+
 fn calculate_safety_stock(
     daily_outbound: &[Decimal],
     lead_time_days: i32,
@@ -2105,7 +2108,7 @@ fn calculate_safety_stock(
     let observations = daily_outbound
         .iter()
         .rev()
-        .take(28)
+        .take(180)
         .map(|value| value.to_f64())
         .collect::<Option<Vec<_>>>()?;
     let mean = observations.iter().sum::<f64>() / observations.len() as f64;
@@ -2257,8 +2260,9 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 mod tests {
     use super::{
         calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
-        evaluate_moving_average, next_delivery_state, rebuild_movement_balances,
-        replay_movement_balances, safety_stock_data_is_eligible, AuthenticatedUser,
+        evaluate_moving_average, list_inventory_forecast, load_safety_stock_history,
+        next_delivery_state, rebuild_movement_balances, replay_movement_balances,
+        safety_stock_data_is_eligible, AppState, AuthenticatedUser, ForecastQuery,
     };
     use rust_decimal::Decimal;
 
@@ -2394,6 +2398,74 @@ mod tests {
         assert!(!safety_stock_data_is_eligible(35, 4));
         assert!(safety_stock_data_is_eligible(35, 5));
         assert!(safety_stock_data_is_eligible(90, 28));
+    }
+
+    #[test]
+    fn safety_stock_uses_up_to_180_complete_days() {
+        let mut history = vec![Decimal::ZERO; 181];
+        history[0] = Decimal::from(100);
+        assert_eq!(
+            calculate_safety_stock(&history, 7, Decimal::new(95, 2)),
+            Some(Decimal::ZERO)
+        );
+        history[100] = Decimal::from(100);
+        assert!(calculate_safety_stock(&history, 7, Decimal::new(95, 2)).unwrap() > Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires WMS_TEST_DATABASE_URL"]
+    async fn safety_stock_history_includes_sparse_outbound_days() {
+        let database_url = std::env::var("WMS_TEST_DATABASE_URL").expect("WMS_TEST_DATABASE_URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_items (id UUID PRIMARY KEY, warehouse_id TEXT NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, safe NUMERIC NOT NULL, safety_stock_mode TEXT NOT NULL, safety_stock_prompted BOOLEAN NOT NULL, safety_stock_lead_time_days INTEGER NOT NULL, safety_stock_service_level NUMERIC NOT NULL, archived_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL)")
+            .execute(&mut *transaction).await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_movements (inventory_item_id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL, movement_type TEXT NOT NULL, quantity_delta NUMERIC NOT NULL)")
+            .execute(&mut *transaction).await.unwrap();
+        let item_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO inventory_items VALUES ($1, 'test', 'test item', 'ea', 0, 'manual', false, 7, 0.95, NULL, current_date - interval '200 days')")
+            .bind(item_id).execute(&mut *transaction).await.unwrap();
+        sqlx::query("INSERT INTO inventory_movements SELECT $1, current_date - (days * interval '1 day'), 'outbound', -10 FROM unnest(ARRAY[10,15,20,45,120,181]) AS days")
+            .bind(item_id).execute(&mut *transaction).await.unwrap();
+        let history = load_safety_stock_history(&mut transaction, item_id)
+            .await
+            .unwrap();
+        let active_days = history
+            .iter()
+            .filter(|value| **value > Decimal::ZERO)
+            .count();
+        let recent_days = history
+            .iter()
+            .rev()
+            .take(28)
+            .filter(|value| **value > Decimal::ZERO)
+            .count();
+        assert_eq!((history.len(), active_days, recent_days), (180, 5, 3));
+        assert!(safety_stock_data_is_eligible(history.len(), active_days));
+        assert!(calculate_safety_stock(&history, 7, Decimal::new(95, 2)).unwrap() > Decimal::ZERO);
+        transaction.commit().await.unwrap();
+        let result = list_inventory_forecast(
+            axum::extract::State(AppState {
+                db: Some(pool.clone()),
+                jwt_secret: String::new(),
+            }),
+            axum::extract::Query(ForecastQuery {
+                warehouse_id: Some("test".into()),
+                history_days: Some(90),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(result["items"][0]["historyDays"], 89);
+        assert_eq!(result["items"][0]["safetyStockHistoryDays"], 180);
+        assert_eq!(result["items"][0]["outboundDays"], 5);
+        assert_eq!(result["items"][0]["safetyStockEligible"], true);
+        pool.close().await;
     }
 
     #[test]

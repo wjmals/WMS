@@ -54,6 +54,7 @@ type ForecastItem = {
   itemName: string;
   unit: string;
   historyDays: number;
+  safetyStockHistoryDays: number;
   status: string;
   forecastOutflow7d: number | null;
   mapePct: number | null;
@@ -199,7 +200,7 @@ export default function InventoryDashboard() {
         for (const item of candidates) {
           safetyPromptedItemsRef.current.add(item.itemId);
           const useAutomatic = window.confirm(
-            `${item.itemName}의 출고 데이터가 충분히 쌓였습니다 (${item.historyDays}일, 출고 기록 ${item.outboundDays}일).\n\n최근 28일의 출고 변동을 이용해 안전재고 ${formatQty(item.suggestedSafetyStock)} ${item.unit}를 자동 계산했습니다.\n\n자동 계산으로 전환할까요? 취소를 선택하면 현재 설정을 유지하고 이 안내는 다시 표시하지 않습니다.`
+            `${item.itemName}의 출고 데이터가 충분히 쌓였습니다 (${item.safetyStockHistoryDays}일, 출고 기록 ${item.outboundDays}일).\n\n최근 최대 180일의 출고 변동을 이용해 안전재고 ${formatQty(item.suggestedSafetyStock)} ${item.unit}를 자동 계산했습니다.\n\n자동 계산으로 전환할까요? 취소를 선택하면 현재 설정을 유지하고 이 안내는 다시 표시하지 않습니다.`
           );
           const response = await fetch('/api/inventory/safety-stock', {
             method: 'POST',
