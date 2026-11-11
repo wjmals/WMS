@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { AlertTriangle, Check, Download, Eye, FileSpreadsheet, Pencil, RefreshCw, Save, Upload, X } from 'lucide-react';
+import { AlertTriangle, Check, Download, Eye, FileSpreadsheet, Pencil, RefreshCw, Save, Sparkles, Upload, X } from 'lucide-react';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
 import { formatQty } from '../lib/formatQuantity';
 
 type InventoryChoice = { id: string; name: string; barcode?: string | null; current: number; unit: string; packageUnit: string | null; packageSize?: number; palletUnit?: string | null; palletSize?: number; safe: number; statusLabel?: string };
 type ImportBatch = { id: string; sourceName: string; submittedEmail: string; rowCount: number; status: string; createdAt: string; reviewNote: string };
 type LedgerRow = { id: string; itemName: string; movementType: string; quantityDelta: number; balanceAfter: number; reason: string; source: string; operator: string | null; occurredAt: string };
-type Props = { warehouseId?: string; role?: string; onChanged?: () => void };
+type Props = { warehouseId?: string; role?: string; inventoryRevision?: number; onChanged?: () => void };
 type PreviewRow = { itemName: string; occurredAt: string; movementType: string; quantityDelta: number; note: string; reference: string };
 type PreviewData = { newItems: Array<{ name: string; barcode: string | null; unit: string; current: number; safe: number }>; rows: PreviewRow[] };
 type SheetRow = Record<string, ExcelJS.CellValue>;
@@ -63,7 +63,7 @@ function styleHeader(row: ExcelJS.Row, color = 'FF1E3A8A') {
   });
 }
 
-export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '', onChanged }: Props) {
+export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '', inventoryRevision = 0, onChanged }: Props) {
   const [previewBatchId, setPreviewBatchId] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -81,6 +81,8 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [bulkProgress, setBulkProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [bulkFailures, setBulkFailures] = useState<Array<{ name: string; error: string }>>([]);
   const loadedWarehouseIdRef = useRef<string | null>(null);
   const [editingSafeItem, setEditingSafeItem] = useState<string | null>(null);
   const [safeDraft, setSafeDraft] = useState('');
@@ -187,7 +189,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       void refresh().catch(() => setNotice('재고 장부를 불러오지 못했습니다.'));
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [refresh]);
+  }, [refresh, inventoryRevision]);
 
   const downloadTemplate = async () => {
     if (!inventoryLoaded || inventoryLoadError) {
@@ -585,6 +587,49 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
     }
   };
 
+  const setAllAutomaticSafetyStock = async () => {
+    if (!items.length || busy) return;
+    if (!window.confirm(`현재 창고의 ${items.length}개 품목을 자동 안전재고로 전환할까요?\n기존 수동 안전재고도 변경되며, 출고 이력이 부족한 품목은 변경되지 않습니다.`)) return;
+    setBusy(true);
+    setNotice('');
+    setBulkFailures([]);
+    setBulkProgress({ completed: 0, total: items.length });
+    const failures: Array<{ name: string; error: string }> = [];
+    let updated = 0;
+    let zeroRecommendations = 0;
+    for (const [index, item] of items.entries()) {
+      try {
+        const response = await fetch(`${rustApi}/safety-stock`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: item.id, warehouseId, mode: 'auto' }),
+        });
+        const text = await response.text();
+        let result: InventoryChoice & { error?: string };
+        try { result = JSON.parse(text); } catch { throw new Error(text.trim() || `서버 응답 오류 (${response.status})`); }
+        if (!response.ok) throw new Error(result.error || `자동 계산 실패 (${response.status})`);
+        const normalized = normalizeApiNumbers(result);
+        setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, ...normalized } : entry));
+        updated += 1;
+        if (normalized.safe <= 0) zeroRecommendations += 1;
+      } catch (error) {
+        failures.push({ name: item.name, error: error instanceof Error ? error.message : '자동 계산에 실패했습니다.' });
+      }
+      setBulkProgress({ completed: index + 1, total: items.length });
+    }
+    setBulkFailures(failures);
+    setNotice(`자동 안전재고 전환 ${updated}개 완료${failures.length ? `, ${failures.length}개 실패` : ''}.${zeroRecommendations ? ` 계산값이 0인 ${zeroRecommendations}개 품목은 미설정 목록에 남습니다.` : ''}`);
+    if (updated) onChanged?.();
+    try {
+      await refresh();
+    } catch {
+      setNotice(`자동 안전재고 전환 ${updated}개 완료, ${failures.length}개 실패. 목록을 다시 불러오지 못했습니다.`);
+    } finally {
+      setBulkProgress(null);
+      setBusy(false);
+    }
+  };
+
   const hasLedgerFilter = !!(filterItem || filterOperator || filterSource || filterType);
 
   // 품목 검색 시 품목·날짜별 입고/출고/조정 합계와 그날 마지막 잔량
@@ -610,7 +655,10 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           <p className="text-xs font-bold uppercase text-primary">Inventory records</p>
           <h2 className="text-xl font-bold text-textMain dark:text-white">과거 거래 가져오기와 감사 장부</h2>
         </div>
-        <button onClick={() => void refresh().catch(() => setNotice('재고 장부를 새로고침하지 못했습니다.'))} title="새로고침" className="p-2 text-textMuted hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"><RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /></button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button disabled={busy || !inventoryLoaded || !!inventoryLoadError || items.length === 0} onClick={() => void setAllAutomaticSafetyStock()} className="inline-flex items-center gap-2 rounded border border-primary px-3 py-2 text-xs font-semibold text-primary disabled:opacity-50"><Sparkles size={14} />{bulkProgress ? `자동 계산 ${bulkProgress.completed}/${bulkProgress.total}` : '전체 자동 계산'}</button>
+          <button onClick={() => void refresh().catch(() => setNotice('재고 장부를 새로고침하지 못했습니다.'))} title="새로고침" className="p-2 text-textMuted hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"><RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /></button>
+        </div>
       </div>
       <div className="grid gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
         <div className="space-y-3 min-w-0">
@@ -647,6 +695,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           )}
           <p className="text-xs leading-relaxed text-textMuted">엑셀 양식(거래입력 시트)에 입고·출고·조정·비전추정 거래를 적어 올리면 승인 대기로 등록되고, 신규 품목은 유형을 &quot;기초재고&quot;로 한 줄 추가합니다. 신규 품목과 거래 모두 창고 관리자 승인 후에 재고에 반영됩니다.</p>
           {notice && <p role="status" className="flex items-start justify-between gap-2 rounded-md bg-blue-50 dark:bg-blue-950/30 px-3 py-2 text-xs text-primary break-words"><span className="min-w-0">{notice}</span><button onClick={() => setNotice('')} title="닫기" className="shrink-0 opacity-60 hover:opacity-100"><X size={13} /></button></p>}
+          {bulkFailures.length > 0 && <div role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200"><p className="font-bold">자동 계산 실패 {bulkFailures.length}개</p><ul className="mt-2 space-y-1">{bulkFailures.map((failure, index) => <li key={`${failure.name}-${index}`} className="break-words">{failure.name}: {failure.error}</li>)}</ul></div>}
           <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">
             <h3 className="text-sm font-bold">가져오기 검토 {pendingBatches.length}</h3>
             {pendingBatches.length === 0 ? <p className="text-xs text-textMuted">검토 대기 중인 가져오기가 없습니다.</p> : pendingBatches.map((batch) => (

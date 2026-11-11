@@ -62,6 +62,7 @@ export default function InventoryReportPage() {
   const [safeStockDraft, setSafeStockDraft] = useState('');
   const [leadTimeDraft, setLeadTimeDraft] = useState('7');
   const [savingSafetyStock, setSavingSafetyStock] = useState(false);
+  const [inventoryRevision, setInventoryRevision] = useState(0);
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [summaryContent, setSummaryContent] = useState('');
 
@@ -171,6 +172,7 @@ export default function InventoryReportPage() {
       if (!response.ok) throw new Error(result.error || '안전재고를 저장하지 못했습니다.');
       setSelectedReportItem(result);
       setAllData((current) => current.map((item) => item.id === result.id ? result : item));
+      setInventoryRevision((revision) => revision + 1);
       await fetchData(true);
     } catch (error) {
       alert(error instanceof Error ? error.message : '안전재고를 저장하지 못했습니다.');
@@ -198,6 +200,7 @@ export default function InventoryReportPage() {
       setSelectedReportItem(result);
       setSafeStockDraft(String(result.safe));
       setAllData((current) => current.map((item) => item.id === result.id ? result : item));
+      setInventoryRevision((revision) => revision + 1);
       await fetchData(true);
     } catch (error) {
       alert(error instanceof Error ? error.message : '안전재고 모드를 바꾸지 못했습니다.');
@@ -542,7 +545,7 @@ export default function InventoryReportPage() {
         )}
       </div>
 
-      <InventoryDataTools warehouseId={user?.warehouseId} role={user?.role} onChanged={() => void fetchData(true)} />
+      <InventoryDataTools warehouseId={user?.warehouseId} role={user?.role} inventoryRevision={inventoryRevision} onChanged={() => void fetchData(true)} />
 
       {/* 재고 상태 상세 모달 */}
       <AnimatePresence>
