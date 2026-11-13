@@ -74,6 +74,8 @@ type ForecastData = {
   model: string;
   status: string;
   minimumHistoryDays: number;
+  mapeSampleCount?: number;
+  horizonBacktests?: Array<{ horizonDays: number; sampleCount: number; mapePct: number | null; accuracyPct: number | null }>;
   mapePct: number | null;
   accuracyPct: number | null;
   targetAccuracyPct: number;
@@ -114,6 +116,7 @@ export default function InventoryDashboard() {
   const canRegisterInventory = isWarehouseAdmin || user?.role === '창고지기';
 
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const [inventoryMetricsAvailable, setInventoryMetricsAvailable] = useState(false);
   const [zones, setZones] = useState<ZoneData[]>([]);
   const [movementDays, setMovementDays] = useState<MovementDay[]>([]);
   const [forecastData, setForecastData] = useState<ForecastData | null>(null);
@@ -168,11 +171,17 @@ export default function InventoryDashboard() {
       const movementData = await movementRes.json();
       const forecastResult = await forecastRes.json();
 
-      if (Array.isArray(invData)) setItems(normalizeApiNumbers(invData));
+      if (invRes.ok && Array.isArray(invData)) {
+        setItems(normalizeApiNumbers(invData));
+        setInventoryMetricsAvailable(true);
+      } else {
+        setInventoryMetricsAvailable(false);
+      }
       if (Array.isArray(zoneData)) setZones(normalizeApiNumbers(zoneData));
       if (Array.isArray(movementData)) setMovementDays(normalizeApiNumbers(movementData));
       if (forecastRes.ok && forecastResult && Array.isArray(forecastResult.items)) setForecastData(normalizeApiNumbers(forecastResult));
     } catch (e) {
+      setInventoryMetricsAvailable(false);
       console.error(e);
     } finally {
       setLoading(false);
@@ -864,7 +873,7 @@ export default function InventoryDashboard() {
           <div>
             <p className="text-xs font-bold uppercase text-primary">Demand baseline · not an AI forecast</p>
             <h2 className="text-xl font-bold text-textMain dark:text-white">7일 출고 기준선 · 28일 이동평균</h2>
-            <p className="mt-1 text-xs text-textMuted">실제 outbound 장부만 사용합니다. 최근 7일 rolling backtest MAPE이며, 실제 품절률과 예측 성능 보증을 뜻하지 않습니다.</p>
+            <p className="mt-1 text-xs text-textMuted">최근 28일 출고 장부의 이동평균입니다. 학습형 AI 모델이 아니며, 출고가 없는 날도 계산에 포함합니다.</p>
           </div>
           <span className={`rounded-lg px-3 py-2 text-xs font-bold ${forecastData?.status === 'measured' ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
             {forecastData?.status === 'measured' ? '백테스트 가능' : '실측 데이터 부족'}
@@ -872,14 +881,16 @@ export default function InventoryDashboard() {
         </div>
         <div className="grid gap-4 md:grid-cols-3">
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
-            <p className="text-xs text-textMuted">백테스트 MAPE / 정확도 기준</p>
+            <p className="text-xs text-textMuted">최근 7일 일별 검증 MAPE</p>
             <p className="mt-2 text-lg font-bold">{forecastData?.mapePct == null ? '측정 불가' : `${forecastData.mapePct.toFixed(1)}% MAPE`}</p>
-            <p className="text-xs text-textMuted">목표 정확도 {forecastData?.targetAccuracyPct ?? 92}% {forecastData?.status === 'measured' ? (forecastData.targetMet ? '달성' : '미달성') : '평가 대기'}</p>
+            <p className="text-xs text-textMuted">출고일 표본 {forecastData?.mapeSampleCount ?? 0}건 · 목표 정확도 {forecastData?.targetAccuracyPct ?? 92}% {forecastData?.status === 'measured' ? (forecastData.targetMet ? '달성' : '미달성') : '평가 대기'}</p>
           </div>
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
             <p className="text-xs text-textMuted">품절률 KPI</p>
             <p className="mt-2 text-lg font-bold">산출 불가</p>
-            <p className="text-xs text-textMuted">{forecastData?.stockoutMetricReason || '미충족 수요 기록이 없습니다.'}</p>
+            <p className="text-xs text-textMuted">{forecastData?.stockoutMetricReason || '품절로 처리하지 못한 주문이나 출고 요청 기록이 없습니다.'}</p>
+            <p className="mt-2 text-xs font-semibold">현재 재고 0 품목 비율: {!inventoryMetricsAvailable || items.length === 0 ? '측정 불가' : `${(items.filter((item) => item.current === 0).length / items.length * 100).toFixed(1)}% (${items.filter((item) => item.current === 0).length}/${items.length})`}</p>
+            <p className="text-[11px] text-textMuted">현재 시점의 품목 비율이며, 주문 미충족 기준 품절률은 아닙니다.</p>
           </div>
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
             <p className="text-xs text-textMuted">품목별 7일 기준 출고량</p>
@@ -890,7 +901,19 @@ export default function InventoryDashboard() {
             ) : <p className="mt-2 text-xs text-textMuted">활성 품목 또는 장부가 없습니다.</p>}
           </div>
         </div>
-        <p className="text-[11px] text-textMuted">모델: {forecastData?.model || '28-day moving-average baseline'} · 품절률은 주문 미충족/품절 시도를 기록하지 않아 계산하지 않습니다. 데이터가 부족한 품목은 예측값을 표시하지 않습니다.</p>
+        <div className="overflow-x-auto border-y border-gray-200 dark:border-gray-800 py-3">
+          <h3 className="text-sm font-bold">예측 기간별 과거 검증</h3>
+          <table className="mt-2 w-full min-w-[380px] text-left text-xs">
+            <thead className="text-textMuted"><tr><th className="py-2">예측 기간</th><th>MAPE</th><th>참고 정확도</th><th>검증 표본</th></tr></thead>
+            <tbody>{[1, 7, 30].map((days) => {
+              const result = forecastData?.horizonBacktests?.find((entry) => entry.horizonDays === days);
+              return <tr key={days} className="border-t border-gray-100 dark:border-gray-800"><td className="py-2">{days}일</td><td>{result?.mapePct == null ? '측정 불가' : `${result.mapePct.toFixed(1)}%`}</td><td>{result?.accuracyPct == null ? '측정 불가' : `${result.accuracyPct.toFixed(1)}%`}</td><td>{result?.sampleCount ?? 0}건</td></tr>;
+            })}</tbody>
+          </table>
+          <p className="text-[11px] text-textMuted">최근 최대 89일의 출고 장부로 구간을 하루씩 이동하며 검증합니다. 실제 출고 합계가 0인 구간은 MAPE에서 제외합니다. 참고 정확도는 최저 0으로 제한한 100 - MAPE이며, 정확도 상한이나 미래 성능을 보장하지 않습니다.</p>
+          <p className="mt-1 text-[11px] text-textMuted">정확도 개선에는 실제 주문·품절·계절성 데이터 확보와 별도 기간의 모델 비교 검증이 필요합니다.</p>
+        </div>
+        <div className="border-b border-gray-200 dark:border-gray-800 pb-3 text-xs"><strong>적시 출고율: 산출 불가</strong><p className="mt-1 text-textMuted">출고 요청별 약속 시각과 실제 출고 시각을 연결해 기록해야 계산할 수 있습니다.</p></div>
       </section>
 
       {/* 1. 수기 재고 품목 추가 모달 (창고 관리자 전용) */}

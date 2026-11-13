@@ -35,6 +35,7 @@ type AnalysisLog = {
 type AnalysisResult = {
   estimateId?: string;
   reviewStatus?: string;
+  model?: string;
   itemName: string;
   estimatedQuantity: number;
   unit: string;
@@ -58,7 +59,8 @@ type PendingEstimate = {
   createdAt: string;
 };
 
-type InventoryChoice = { id: string; name: string; unit: string; packageUnit: string | null };
+type InventoryChoice = { id: string; name: string; unit: string; packageUnit: string | null; current: number; safe: number; status: string };
+type ZoneOccupancy = { id: string; name: string; capacity: number; capacityUnit: string; currentStockSum: number; stateLabel: string };
 
 const statusConfig = {
   shortage: {
@@ -113,6 +115,10 @@ export default function MonitorPage() {
   const [logs, setLogs] = useState<AnalysisLog[]>([]);
   const [pendingEstimates, setPendingEstimates] = useState<PendingEstimate[]>([]);
   const [inventoryChoices, setInventoryChoices] = useState<InventoryChoice[]>([]);
+  const [inventoryAlertError, setInventoryAlertError] = useState('');
+  const [inventoryAlertsLoaded, setInventoryAlertsLoaded] = useState(false);
+  const [zones, setZones] = useState<ZoneOccupancy[]>([]);
+  const [zoneError, setZoneError] = useState('');
   const [reviewSelections, setReviewSelections] = useState<Record<string, string>>({});
   const [analyzing, setAnalyzing] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
@@ -147,12 +153,32 @@ export default function MonitorPage() {
         fetch(`/api/vision/estimates?warehouseId=${warehouseId}`),
         fetch(`/api/inventory?warehouseId=${warehouseId}`),
       ]);
+      if (!inventoryResponse.ok) throw new Error('재고 알림을 불러오지 못했습니다.');
       const estimates = await estimateResponse.json();
       const inventory = await inventoryResponse.json();
+      if (!Array.isArray(inventory)) throw new Error('재고 알림 응답이 올바르지 않습니다.');
       if (Array.isArray(estimates)) setPendingEstimates(normalizeApiNumbers(estimates));
-      if (Array.isArray(inventory)) setInventoryChoices(normalizeApiNumbers(inventory));
-    } catch {}
+      setInventoryChoices(normalizeApiNumbers(inventory));
+      setInventoryAlertError('');
+    } catch (error) {
+      setInventoryAlertError(error instanceof Error ? error.message : '재고 알림을 불러오지 못했습니다.');
+    } finally {
+      setInventoryAlertsLoaded(true);
+    }
   }, [user]);
+
+  const fetchZones = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/zones?warehouseId=${encodeURIComponent(user?.warehouseId || 'wh_wjmals')}`);
+      if (!response.ok) throw new Error('구역 정보를 불러오지 못했습니다.');
+      const data = await response.json();
+      if (!Array.isArray(data)) throw new Error('구역 정보 응답이 올바르지 않습니다.');
+      setZones(normalizeApiNumbers(data));
+      setZoneError('');
+    } catch (error) {
+      setZoneError(error instanceof Error ? error.message : '구역 정보를 불러오지 못했습니다.');
+    }
+  }, [user?.warehouseId]);
 
   // 분석용 레퍼런스 이미지 불러오기
   const fetchReferences = useCallback(async () => {
@@ -169,6 +195,16 @@ export default function MonitorPage() {
     fetchReferences();
     fetchPendingEstimates();
   }, [fetchLogs, fetchReferences, fetchPendingEstimates]);
+
+  useEffect(() => {
+    if (!user) return;
+    void fetchZones();
+    const timer = window.setInterval(() => {
+      void fetchZones();
+      void fetchPendingEstimates();
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [user, fetchZones, fetchPendingEstimates]);
 
   const reviewEstimate = async (estimate: PendingEstimate, approve: boolean) => {
     const inventoryItemId = reviewSelections[estimate.id] || estimate.inventoryItemId || undefined;
@@ -577,15 +613,15 @@ export default function MonitorPage() {
       {/* 상단 통계 카드 */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
-          <span className="text-xs font-bold text-textMuted uppercase">총 누적 AI 분석 건수</span>
+          <span className="text-xs font-bold text-textMuted uppercase">이번 세션 분석 건수</span>
           <h3 className="text-2xl font-bold text-textMain dark:text-white mt-1">{totalAnalyzed} 회</h3>
-          <p className="text-xs text-textMuted mt-1">Groq Vision Llama-4 엔진 적용</p>
+          <p className="text-xs text-textMuted mt-1">{latestResult?.model ? `Groq 모델: ${latestResult.model}` : 'Groq 이미지 분석'} · 참고 이미지는 모델 학습이 아닌 분석 입력입니다.</p>
         </div>
 
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
           <span className="text-xs font-bold text-red-500 uppercase">재고 부족 감지 알림</span>
           <h3 className="text-2xl font-bold text-red-600 mt-1">{shortageCount} 건</h3>
-          <p className="text-xs text-red-500 font-semibold mt-1">감지 시 재고 데이터 자동 갱신</p>
+          <p className="text-xs text-red-500 font-semibold mt-1">추정 결과는 관리자 승인 후 재고에 반영</p>
         </div>
 
         <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl shadow-sm">
@@ -596,6 +632,24 @@ export default function MonitorPage() {
           <p className="text-xs text-textMuted mt-1">설정된 주기마다 자동 캡처 분석</p>
         </div>
       </div>
+
+      <section className="border-y border-gray-200 dark:border-gray-800 py-5 space-y-4">
+        <div>
+          <h2 className="text-lg font-bold">구역별 재고 점유 히트맵</h2>
+          <p className="text-xs text-textMuted mt-1">구역 배치 품목 중 수용용량과 단위가 같은 재고 기준입니다. 실제 창고 배치도는 아닙니다.</p>
+        </div>
+        {zoneError ? <p role="alert" className="text-sm text-red-600">{zoneError}</p> : zones.length === 0 ? <p className="text-sm text-textMuted">등록된 구역이 없습니다.</p> : <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+          {zones.map((zone) => {
+            const occupancy = zone.capacity > 0 ? zone.currentStockSum / zone.capacity * 100 : null;
+            const tone = occupancy === null ? 'bg-gray-100 text-gray-700 border-gray-200' : occupancy > 100 ? 'bg-red-100 text-red-900 border-red-300' : occupancy >= 80 ? 'bg-amber-100 text-amber-900 border-amber-300' : occupancy >= 40 ? 'bg-emerald-100 text-emerald-900 border-emerald-300' : 'bg-sky-50 text-sky-900 border-sky-200';
+            return <div key={zone.id} className={`min-w-0 border rounded-md p-3 ${tone}`}><p className="break-words text-sm font-bold">{zone.name}</p><p className="mt-1 text-lg font-bold">{occupancy === null ? '용량 미설정' : `${occupancy.toFixed(1)}%`}</p><p className="text-xs break-words">{zone.currentStockSum.toLocaleString()} / {zone.capacity.toLocaleString()} {zone.capacityUnit} · {zone.stateLabel}</p></div>;
+          })}
+        </div>}
+        <div role="status" className="border-t border-gray-200 dark:border-gray-800 pt-3">
+          <h3 className="text-sm font-bold">재고 부족 알림{inventoryAlertsLoaded && !inventoryAlertError ? ` ${inventoryChoices.filter((item) => item.safe > 0 && item.status === 'shortage').length}건` : ''}</h3>
+          {inventoryAlertError ? <p role="alert" className="mt-1 text-xs text-red-700">{inventoryAlertError}</p> : !inventoryAlertsLoaded ? <p className="mt-1 text-xs text-textMuted">재고 알림을 불러오는 중입니다.</p> : inventoryChoices.some((item) => item.safe > 0 && item.status === 'shortage') ? <ul className="mt-2 space-y-1 text-xs text-red-700 dark:text-red-300">{inventoryChoices.filter((item) => item.safe > 0 && item.status === 'shortage').map((item) => <li key={item.id}>{item.name}: {item.current.toLocaleString()} / 안전재고 {item.safe.toLocaleString()} {item.unit}</li>)}</ul> : <p className="mt-1 text-xs text-textMuted">현재 부족으로 판정된 품목이 없습니다.</p>}
+        </div>
+      </section>
 
       {/* 본문: 좌측 카메라 화면 + 우측 설정 및 이력 */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">

@@ -1981,9 +1981,16 @@ async fn list_inventory_forecast(
     let mut aggregate_percentage_error = Decimal::ZERO;
     let mut aggregate_samples = 0_usize;
     let mut eligible_items = 0_usize;
+    let horizons = [1_usize, 7, 30];
+    let mut horizon_totals = [(Decimal::ZERO, 0_usize); 3];
     let items = grouped.into_iter().map(|(id, (name, unit, safe, safety_stock_mode, safety_stock_prompted, lead_time_days, service_level, daily_outbound))| {
         let history_count = daily_outbound.len().min((history_days - 1) as usize);
         let forecast_history = &daily_outbound[daily_outbound.len() - history_count..];
+        for (index, horizon) in horizons.iter().enumerate() {
+            let (error_sum, sample_count) = backtest_horizon(forecast_history, TRAINING_DAYS, *horizon);
+            horizon_totals[index].0 += error_sum;
+            horizon_totals[index].1 += sample_count;
+        }
         let safety_stock_history_days = daily_outbound.len().min(180);
         let outbound_days = daily_outbound.iter().rev().take(180).filter(|value| **value > Decimal::ZERO).count();
         let safety_stock_eligible = safety_stock_data_is_eligible(safety_stock_history_days, outbound_days);
@@ -2048,21 +2055,33 @@ async fn list_inventory_forecast(
         Some(aggregate_percentage_error / Decimal::from(aggregate_samples as u64))
     };
     let sufficient = overall_mape.is_some();
+    let horizon_backtests = horizons.iter().enumerate().map(|(index, horizon)| {
+        let (error_sum, sample_count) = horizon_totals[index];
+        let mape = (sample_count > 0).then(|| error_sum / Decimal::from(sample_count as u64));
+        serde_json::json!({
+            "horizonDays": horizon,
+            "sampleCount": sample_count,
+            "mapePct": mape,
+            "accuracyPct": mape.map(|value| (Decimal::from(100u32) - value).max(Decimal::ZERO))
+        })
+    }).collect::<Vec<_>>();
     Ok(Json(serde_json::json!({
         "model": "28-day moving-average baseline",
         "forecastHorizonDays": HOLDOUT_DAYS,
         "backtestHorizonDays": HOLDOUT_DAYS,
         "minimumHistoryDays": TRAINING_DAYS + HOLDOUT_DAYS,
         "historyDaysRequested": history_days,
+        "horizonBacktests": horizon_backtests,
         "status": if sufficient { "measured" } else { "insufficient_data" },
         "itemsWithEvaluableMape": eligible_items,
+        "mapeSampleCount": aggregate_samples,
         "mapePct": overall_mape,
         "accuracyPct": overall_mape.map(|value| (Decimal::from(100u32) - value).max(Decimal::ZERO)),
         "targetAccuracyPct": 92,
         "targetMet": overall_mape.is_some_and(|value| Decimal::from(100u32) - value >= Decimal::from(92u32)),
         "stockoutRatePct": Value::Null,
         "stockoutMetricStatus": "not_measurable",
-        "stockoutMetricReason": "unmet demand and stockout attempts are not recorded; outbound ledger alone cannot measure the stockout rate",
+        "stockoutMetricReason": "품절로 처리하지 못한 주문이나 출고 요청이 기록되지 않아 출고 장부만으로는 품절률을 계산할 수 없습니다.",
         "items": items
     })))
 }
@@ -2247,6 +2266,25 @@ fn evaluate_moving_average(
     Some((horizon_total, mape, observed_days))
 }
 
+fn backtest_horizon(values: &[Decimal], window: usize, horizon: usize) -> (Decimal, usize) {
+    if window == 0 || horizon == 0 || values.len() < window + horizon {
+        return (Decimal::ZERO, 0);
+    }
+    let mut error_sum = Decimal::ZERO;
+    let mut samples = 0;
+    for start in window..=values.len() - horizon {
+        let average = values[start - window..start].iter().copied().sum::<Decimal>()
+            / Decimal::from(window as u64);
+        let actual = values[start..start + horizon].iter().copied().sum::<Decimal>();
+        if actual > Decimal::ZERO {
+            let predicted = average * Decimal::from(horizon as u64);
+            error_sum += (predicted - actual).abs() / actual * Decimal::from(100u32);
+            samples += 1;
+        }
+    }
+    (error_sum, samples)
+}
+
 fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, bool), ()> {
     match current {
         "AT_PICKUP" => Ok(("IN_TRANSIT", "허브터미널 이동중", false)),
@@ -2259,7 +2297,7 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 #[cfg(test)]
 mod tests {
     use super::{
-        calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
+        backtest_horizon, calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
         evaluate_moving_average, list_inventory_forecast, load_safety_stock_history,
         next_delivery_state, rebuild_movement_balances, replay_movement_balances,
         safety_stock_data_is_eligible, AppState, AuthenticatedUser, ForecastQuery,
@@ -2375,6 +2413,18 @@ mod tests {
     }
 
     #[test]
+    fn horizon_backtest_uses_past_data_and_skips_zero_demand_windows() {
+        let steady = vec![Decimal::from(10); 40];
+        assert_eq!(backtest_horizon(&steady, 28, 1), (Decimal::ZERO, 12));
+        assert_eq!(backtest_horizon(&steady, 28, 7), (Decimal::ZERO, 6));
+        assert_eq!(backtest_horizon(&steady, 28, 30), (Decimal::ZERO, 0));
+        let mut changing = vec![Decimal::from(10); 28];
+        changing.push(Decimal::from(20));
+        assert_eq!(backtest_horizon(&changing, 28, 1), (Decimal::from(50), 1));
+        assert_eq!(backtest_horizon(&vec![Decimal::ZERO; 40], 28, 7), (Decimal::ZERO, 0));
+    }
+
+    #[test]
     fn safety_stock_requires_28_days_and_uses_service_level_z_score() {
         let steady = vec![Decimal::from(10); 28];
         assert_eq!(
@@ -2465,6 +2515,13 @@ mod tests {
         assert_eq!(result["items"][0]["safetyStockHistoryDays"], 180);
         assert_eq!(result["items"][0]["outboundDays"], 5);
         assert_eq!(result["items"][0]["safetyStockEligible"], true);
+        let horizons = result["horizonBacktests"].as_array().unwrap();
+        assert_eq!(horizons.len(), 3);
+        for (index, expected_days) in [1, 7, 30].iter().enumerate() {
+            assert_eq!(horizons[index]["horizonDays"], *expected_days);
+            assert!(horizons[index]["sampleCount"].as_u64().unwrap() > 0);
+            assert!(!horizons[index]["mapePct"].is_null());
+        }
         pool.close().await;
     }
 
@@ -3712,7 +3769,7 @@ async fn analyze_monitor_image(
         .bind(estimate_id).bind(&warehouse_id).bind(item_id).bind(&result.item_name).bind(result.estimated_quantity).bind(&result.unit).bind(result.confidence).bind(&result.recommendation).bind(&result.reason).bind(input.image.chars().take(50_000).collect::<String>()).bind(&user.id).bind(&user.email)
         .execute(&db).await.map_err(internal_error)?;
     Ok(Json(
-        serde_json::json!({ "estimateId":estimate_id,"itemName":result.item_name,"estimatedQuantity":result.estimated_quantity,"unit":result.unit,"status":result.status,"statusLabel":result.status_label,"confidence":result.confidence,"recommendation":result.recommendation,"reason":result.reason,"reviewStatus":"PENDING","savedToDb":false }),
+        serde_json::json!({ "estimateId":estimate_id,"itemName":result.item_name,"estimatedQuantity":result.estimated_quantity,"unit":result.unit,"status":result.status,"statusLabel":result.status_label,"confidence":result.confidence,"recommendation":result.recommendation,"reason":result.reason,"model":vision_model,"reviewStatus":"PENDING","savedToDb":false }),
     ))
 }
 
