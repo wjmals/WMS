@@ -11,6 +11,9 @@ import InventoryDataTools from '../../components/InventoryDataTools';
 import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
 import { formatQty, formatDiffText } from '../../lib/formatQuantity';
 import { useBarcodeMode } from '../../lib/barcodeMode';
+import ExcelJS from 'exceljs';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { fetchInventoryLedger, type InventoryLedgerRow } from '../../lib/inventoryLedger';
 
 const UNSET_LABEL = '안전재고 미설정';
 const FILTER_TO_STATUS: Record<string, string> = { '재고 부족': 'shortage', '안전 재고': 'safe', '재고 과다': 'overstock' };
@@ -63,6 +66,9 @@ export default function InventoryReportPage() {
   const [leadTimeDraft, setLeadTimeDraft] = useState('7');
   const [savingSafetyStock, setSavingSafetyStock] = useState(false);
   const [inventoryRevision, setInventoryRevision] = useState(0);
+  const [selectedLedger, setSelectedLedger] = useState<InventoryLedgerRow[]>([]);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState('');
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [summaryContent, setSummaryContent] = useState('');
 
@@ -92,6 +98,52 @@ export default function InventoryReportPage() {
   useEffect(() => {
     setCurrentTime(new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
   }, []);
+
+  useEffect(() => {
+    if (!selectedReportItem || !user?.warehouseId) {
+      setSelectedLedger([]);
+      setLedgerError('');
+      return;
+    }
+    const controller = new AbortController();
+    setLedgerLoading(true);
+    setLedgerError('');
+    const params = new URLSearchParams({ warehouseId: user.warehouseId, itemId: selectedReportItem.id });
+    void fetchInventoryLedger(params, { signal: controller.signal })
+      .then(setSelectedLedger)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setLedgerError(error instanceof Error ? error.message : '품목 이력을 불러오지 못했습니다.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setLedgerLoading(false); });
+    return () => controller.abort();
+  }, [selectedReportItem?.id, user?.warehouseId]);
+
+  const exportSelectedLedger = async () => {
+    if (!selectedReportItem || selectedLedger.length === 0) return;
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('품목 변동 내역', { views: [{ state: 'frozen', ySplit: 1 }] });
+    sheet.columns = [
+      { header: '거래일시', key: 'date', width: 22 }, { header: '품목명', key: 'name', width: 30 },
+      { header: '유형', key: 'type', width: 14 }, { header: `증감 (${selectedReportItem.unit})`, key: 'delta', width: 18 },
+      { header: `변동 후 재고 (${selectedReportItem.unit})`, key: 'balance', width: 24 },
+      { header: '담당자', key: 'operator', width: 28 }, { header: '출처', key: 'source', width: 22 }, { header: '사유', key: 'reason', width: 42 },
+    ];
+    sheet.getRow(1).font = { bold: true };
+    selectedLedger.forEach((row) => sheet.addRow({
+      date: new Date(row.occurredAt), name: row.itemName, type: row.movementType,
+      delta: row.quantityDelta, balance: row.balanceAfter, operator: row.operator || '시스템', source: row.source, reason: row.reason,
+    }));
+    sheet.getColumn('date').numFmt = 'yyyy-mm-dd hh:mm';
+    sheet.getColumn('delta').numFmt = '#,##0.######;[Red]-#,##0.######';
+    sheet.getColumn('balance').numFmt = '#,##0.######';
+    const buffer = await workbook.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buffer as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `wms-${selectedReportItem.name.replace(/[\\/:*?"<>|]/g, '_')}-거래내역.xlsx`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
 
   // 새 항목 추가
   const handleAdd = async () => {
@@ -605,6 +657,38 @@ export default function InventoryReportPage() {
                   {selectedReportItem.recommendation}
                 </div>
               </div>
+
+                <div className="space-y-3 border-y border-gray-200 dark:border-gray-700 py-4">
+                  <div className="flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold">월별 출고량</h4>
+                      <p className="text-[11px] text-textMuted">기록된 출고 수량 합계 기준 · 오래된 이력은 10년까지 조회</p>
+                    </div>
+                    <button disabled={ledgerLoading || !selectedLedger.length} onClick={() => void exportSelectedLedger()} className="inline-flex items-center gap-1 rounded border border-gray-300 px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"><Download size={13} />이 품목 내역 엑셀</button>
+                  </div>
+                  {ledgerError ? <p role="alert" className="text-xs text-red-600">{ledgerError}</p> : ledgerLoading ? <p role="status" className="text-xs text-textMuted">품목 내역을 불러오는 중입니다.</p> : selectedLedger.length === 0 ? <p className="text-xs text-textMuted">이 품목의 거래 내역이 없습니다.</p> : (() => {
+                    const months = new Map<string, number>();
+                    for (const row of selectedLedger) {
+                      if (row.movementType !== 'outbound') continue;
+                      const month = row.occurredAt.slice(0, 7);
+                      months.set(month, (months.get(month) || 0) + Math.abs(row.quantityDelta));
+                    }
+                    const monthlyOutbound = [...months.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([month, quantity]) => ({ month, quantity }));
+                    const bestMonth = monthlyOutbound.reduce<(typeof monthlyOutbound)[number] | null>((best, row) => !best || row.quantity > best.quantity ? row : best, null);
+                    return <>
+                      {monthlyOutbound.length > 0 ? <>
+                        <p className="text-xs font-semibold">기록상 출고 최다 월: <strong>{bestMonth?.month}</strong> · {formatQty(bestMonth?.quantity || 0)} {selectedReportItem.unit}</p>
+                        <div className="h-44 w-full" role="img" aria-label={`${selectedReportItem.name} 월별 출고량 차트`}>
+                          <ResponsiveContainer width="100%" height="100%"><BarChart data={monthlyOutbound} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="month" tick={{ fontSize: 10 }} minTickGap={24} /><YAxis tick={{ fontSize: 10 }} width={45} tickFormatter={(value) => formatQty(value)} /><Tooltip formatter={(value) => `${formatQty(Number(value))} ${selectedReportItem.unit}`} /><Bar dataKey="quantity" name="출고량" fill="#d97706" radius={[3, 3, 0, 0]} maxBarSize={24} /></BarChart></ResponsiveContainer>
+                        </div>
+                      </> : <p className="text-xs text-textMuted">기록된 출고가 없어 월별 판매량을 비교할 수 없습니다.</p>}
+                      <div className="max-h-52 overflow-auto rounded border border-gray-200 dark:border-gray-700">
+                        <table className="w-full min-w-[560px] text-left text-xs"><thead className="sticky top-0 bg-gray-50 dark:bg-gray-800 text-textMuted"><tr><th className="p-2">일시</th><th className="p-2">유형</th><th className="p-2">증감</th><th className="p-2">변동 후 재고</th><th className="p-2">담당자 / 사유</th></tr></thead><tbody>{selectedLedger.map((row) => <tr key={row.id} className="border-t border-gray-100 dark:border-gray-800"><td className="p-2 whitespace-nowrap">{new Date(row.occurredAt).toLocaleString('ko-KR')}</td><td className="p-2">{row.movementType}</td><td className={`p-2 font-mono ${row.quantityDelta < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{formatQty(row.quantityDelta)} {selectedReportItem.unit}</td><td className="p-2 font-mono">{formatQty(row.balanceAfter)}</td><td className="p-2"><span>{row.operator || '시스템'}</span><span className="block max-w-[190px] truncate text-textMuted">{row.reason}</span></td></tr>)}</tbody></table>
+                      </div>
+                      <p className="text-[11px] text-textMuted">출고 기록은 판매와 동일하지 않을 수 있으며, 이력에서 기록된 수량을 월별로 합산한 값입니다.</p>
+                    </>;
+                  })()}
+                </div>
 
               <div className="space-y-3 rounded-2xl border border-gray-200 dark:border-gray-700 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">

@@ -249,6 +249,11 @@ struct MovementQuery {
     movement_type: Option<String>,
     item: Option<String>,
     limit: Option<i64>,
+    #[serde(alias = "itemId")]
+    item_id: Option<Uuid>,
+    before: Option<DateTime<Utc>>,
+    #[serde(alias = "beforeId")]
+    before_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -1461,6 +1466,9 @@ async fn list_inventory_ledger(
     let warehouse_id = query
         .warehouse_id
         .unwrap_or_else(|| "wh_wjmals".to_string());
+    if query.before.is_some() != query.before_id.is_some() {
+        return Err((StatusCode::BAD_REQUEST, "before와 beforeId를 함께 지정해야 합니다.".to_string()));
+    }
     let limit = query.limit.unwrap_or(2000).clamp(1, 20000);
     let days = query.days.map(|value| value.clamp(1, 3650));
     let operator = query
@@ -1485,19 +1493,22 @@ async fn list_inventory_ledger(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let rows = sqlx::query_as::<_, (Uuid, String, String, Decimal, Decimal, String, String, Option<String>, DateTime<Utc>)>(
-        "SELECT id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_email,created_at FROM inventory_movements
-          WHERE warehouse_id=$1
-            AND ($3::int IS NULL OR created_at >= now() - ($3::int * interval '1 day'))
-            AND ($4::text IS NULL OR actor_email ILIKE '%' || $4 || '%')
-            AND (NOT $5::bool OR actor_email IS NULL)
-            AND ($6::text IS NULL OR source ILIKE $6 || '%')
-            AND ($7::text IS NULL OR movement_type = $7)
-            AND ($8::text IS NULL OR item_name ILIKE '%' || $8 || '%')
-          ORDER BY created_at DESC,id DESC LIMIT $2",
-    ).bind(warehouse_id).bind(limit).bind(days).bind(operator).bind(system_only).bind(source).bind(movement_type).bind(item)
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String, String, Decimal, Decimal, String, String, Option<String>, DateTime<Utc>)>(
+                "SELECT m.id,m.inventory_item_id,m.item_name,i.unit,m.movement_type,m.quantity_delta,m.balance_after,m.note,m.source,m.actor_email,m.created_at FROM inventory_movements m
+                    JOIN inventory_items i ON i.id=m.inventory_item_id AND i.warehouse_id=m.warehouse_id
+                    WHERE m.warehouse_id=$1
+                        AND ($3::int IS NULL OR m.created_at >= now() - ($3::int * interval '1 day'))
+                        AND ($4::text IS NULL OR m.actor_email ILIKE '%' || $4 || '%')
+                        AND (NOT $5::bool OR m.actor_email IS NULL)
+                        AND ($6::text IS NULL OR m.source ILIKE $6 || '%')
+                        AND ($7::text IS NULL OR m.movement_type = $7)
+                        AND ($8::text IS NULL OR m.item_name ILIKE '%' || $8 || '%')
+                        AND ($9::uuid IS NULL OR m.inventory_item_id=$9)
+                        AND ($10::timestamptz IS NULL OR (m.created_at,m.id) < ($10,$11::uuid))
+                    ORDER BY m.created_at DESC,m.id DESC LIMIT $2",
+        ).bind(warehouse_id).bind(limit).bind(days).bind(operator).bind(system_only).bind(source).bind(movement_type).bind(item).bind(query.item_id).bind(query.before).bind(query.before_id)
         .fetch_all(&db).await.map_err(internal_error)?;
-    Ok(Json(rows.into_iter().map(|row| serde_json::json!({"id":row.0,"itemName":row.1,"movementType":row.2,"quantityDelta":row.3,"balanceAfter":row.4,"reason":row.5,"source":row.6,"operator":row.7,"occurredAt":row.8})).collect()))
+        Ok(Json(rows.into_iter().map(|row| serde_json::json!({"id":row.0,"inventoryItemId":row.1,"itemName":row.2,"unit":row.3,"movementType":row.4,"quantityDelta":row.5,"balanceAfter":row.6,"reason":row.7,"source":row.8,"operator":row.9,"occurredAt":row.10})).collect()))
 }
 
 async fn list_movement_imports(
@@ -2298,9 +2309,9 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 mod tests {
     use super::{
         backtest_horizon, calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
-        evaluate_moving_average, list_inventory_forecast, load_safety_stock_history,
+        evaluate_moving_average, list_inventory_forecast, list_inventory_ledger, load_safety_stock_history,
         next_delivery_state, rebuild_movement_balances, replay_movement_balances,
-        safety_stock_data_is_eligible, AppState, AuthenticatedUser, ForecastQuery,
+        safety_stock_data_is_eligible, AppState, AuthenticatedUser, ForecastQuery, MovementQuery,
     };
     use rust_decimal::Decimal;
 
@@ -2522,6 +2533,42 @@ mod tests {
             assert!(horizons[index]["sampleCount"].as_u64().unwrap() > 0);
             assert!(!horizons[index]["mapePct"].is_null());
         }
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires WMS_TEST_DATABASE_URL"]
+    async fn ledger_pages_filter_by_item_id_and_keep_equal_timestamps() {
+        let database_url = std::env::var("WMS_TEST_DATABASE_URL").expect("WMS_TEST_DATABASE_URL");
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&database_url).await.unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_items (id UUID PRIMARY KEY, warehouse_id TEXT NOT NULL, unit TEXT NOT NULL)")
+            .execute(&mut *transaction).await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_movements (id UUID PRIMARY KEY, inventory_item_id UUID NOT NULL, warehouse_id TEXT NOT NULL, item_name TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta NUMERIC NOT NULL, balance_after NUMERIC NOT NULL, note TEXT NOT NULL, source TEXT NOT NULL, actor_email TEXT, created_at TIMESTAMPTZ NOT NULL)")
+            .execute(&mut *transaction).await.unwrap();
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO inventory_items VALUES ($1,'test','ea'),($2,'test','box')")
+            .bind(first).bind(second).execute(&mut *transaction).await.unwrap();
+        for item in [first, first, first, second] {
+            sqlx::query("INSERT INTO inventory_movements VALUES ($1,$2,'test','비슷한 품목','outbound',-1,10,'QA','test',NULL,'2026-01-01T00:00:00Z')")
+                .bind(uuid::Uuid::new_v4()).bind(item).execute(&mut *transaction).await.unwrap();
+        }
+        transaction.commit().await.unwrap();
+        let state = AppState { db: Some(pool.clone()), jwt_secret: String::new() };
+        let query = |before, before_id| MovementQuery {
+            warehouse_id: Some("test".into()), days: None, operator: None, source: None,
+            movement_type: None, item: None, limit: Some(2), item_id: Some(first), before, before_id,
+        };
+        let first_page = list_inventory_ledger(axum::extract::State(state.clone()), axum::extract::Query(query(None, None))).await.unwrap().0;
+        assert_eq!(first_page.len(), 2);
+        assert!(first_page.iter().all(|row| row["inventoryItemId"] == first.to_string() && row["unit"] == "ea"));
+        let before = first_page[1]["occurredAt"].as_str().unwrap().parse().unwrap();
+        let before_id = first_page[1]["id"].as_str().unwrap().parse().unwrap();
+        let second_page = list_inventory_ledger(axum::extract::State(state), axum::extract::Query(query(Some(before), Some(before_id)))).await.unwrap().0;
+        assert_eq!(second_page.len(), 1);
+        assert_ne!(first_page[0]["id"], second_page[0]["id"]);
+        assert_ne!(first_page[1]["id"], second_page[0]["id"]);
         pool.close().await;
     }
 

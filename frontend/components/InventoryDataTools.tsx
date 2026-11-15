@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 import { AlertTriangle, Check, Download, Eye, FileSpreadsheet, Pencil, RefreshCw, Save, Sparkles, Upload, X } from 'lucide-react';
 import { normalizeApiNumbers } from '../lib/normalizeApiNumbers';
 import { formatQty } from '../lib/formatQuantity';
+import { fetchInventoryLedger } from '../lib/inventoryLedger';
 
 type InventoryChoice = { id: string; name: string; barcode?: string | null; current: number; unit: string; packageUnit: string | null; packageSize?: number; palletUnit?: string | null; palletSize?: number; safe: number; statusLabel?: string };
 type ImportBatch = { id: string; sourceName: string; submittedEmail: string; rowCount: number; status: string; createdAt: string; reviewNote: string };
@@ -250,10 +251,12 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   const downloadLedger = async () => {
     setBusy(true);
     try {
-      const response = await fetch(ledgerUrl(20000));
-      const data = await response.json();
-      if (!response.ok || !Array.isArray(data)) throw new Error(data?.error || '장부를 불러오지 못했습니다.');
-      const rows: LedgerRow[] = normalizeApiNumbers(data);
+      const params = new URLSearchParams({ warehouseId, limit: filterItem.trim() ? '20000' : '2000' });
+      if (filterItem.trim()) params.set('item', filterItem.trim());
+      if (filterOperator.trim()) params.set('operator', filterOperator.trim());
+      if (filterSource) params.set('source', filterSource);
+      if (filterType) params.set('movementType', filterType);
+      const rows = await fetchInventoryLedger(params, { onProgress: (count) => setNotice(`전체 재고 장부 ${count.toLocaleString()}건을 읽는 중입니다.`) });
       if (rows.length === 0) {
         setNotice('내보낼 장부 기록이 없습니다.');
         return;
@@ -292,7 +295,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       });
       sheet.autoFilter = { from: 'A1', to: 'I1' };
       await saveWorkbook(workbook, `wms-재고변동기록-${new Date().toISOString().slice(0, 10)}.xlsx`);
-      setNotice(`재고 변동 기록 ${rows.length.toLocaleString()}건을 엑셀로 저장했습니다.`);
+      setNotice(`재고 변동 기록 ${rows.length.toLocaleString()}건을 모두 엑셀로 저장했습니다.`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '엑셀 파일을 만들지 못했습니다.');
     } finally {
