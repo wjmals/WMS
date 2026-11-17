@@ -88,6 +88,8 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   const loadedWarehouseIdRef = useRef<string | null>(null);
   const [editingSafeItem, setEditingSafeItem] = useState<string | null>(null);
   const [safeDraft, setSafeDraft] = useState('');
+  const [reviewTarget, setReviewTarget] = useState<{ batch: ImportBatch; approve: boolean } | null>(null);
+  const [reviewNote, setReviewNote] = useState('');
   const canReview = role === '관리자' || role === '서버 관리자';
   const pendingBatches = batches.filter((batch) => batch.status === 'PENDING');
   const unsetItems = items.filter((item) => item.safe <= 0);
@@ -527,24 +529,35 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
     }
   };
 
-  const reviewBatch = async (batch: ImportBatch, approve: boolean) => {
-    const note = window.prompt(approve ? '승인 사유를 입력하세요.' : '반려 사유를 입력하세요.', approve ? '기초 거래 확인 완료' : '원본 증빙 재확인 필요');
-    if (!note?.trim()) return;
+  const openReviewDialog = (batch: ImportBatch, approve: boolean) => {
+    setReviewNote(approve ? '기초 거래 확인 완료' : '원본 증빙 재확인 필요');
+    setReviewTarget({ batch, approve });
+  };
+
+  const reviewBatch = async () => {
+    if (!reviewTarget || !reviewNote.trim()) return;
+    const { batch, approve } = reviewTarget;
     setBusy(true);
     try {
       const response = await fetch(`${rustApi}/imports/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: batch.id, approve, note }),
+        body: JSON.stringify({ id: batch.id, approve, note: reviewNote.trim() }),
       });
       const text = await response.text();
       let result: { error?: string } = {};
       try { result = JSON.parse(text); } catch { result = { error: text.trim() }; }
       if (!response.ok) throw new Error(result.error || '검토 결과를 저장하지 못했습니다.');
+      setReviewTarget(null);
+      setReviewNote('');
       setNotice(approve ? '승인했습니다. 가져온 품목과 거래가 장부에 반영되었습니다. 현재 잔량은 그대로 유지됩니다.' : '반려했습니다. 신규 품목과 거래는 반영되지 않습니다.');
       setPreviewBatchId(null);
       setPreview(null);
-      await refresh();
+      try {
+        await refresh();
+      } catch {
+        setNotice(`${approve ? '승인했습니다.' : '반려했습니다.'} 목록 새로고침에 실패했습니다. 새로고침 버튼으로 확인하세요.`);
+      }
       onChanged?.();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '검토를 저장하지 못했습니다.');
@@ -715,7 +728,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
                 <div className="min-w-0 break-words"><strong>{batch.sourceName}</strong><span className="ml-2 text-textMuted">{batch.rowCount}건 · 승인 대기 · {batch.submittedEmail}</span></div>
                 <div className="flex items-center gap-1">
                   <button onClick={() => void togglePreview(batch)} className="inline-flex items-center gap-1 rounded border border-gray-300 dark:border-gray-700 px-2 py-1 font-semibold"><Eye size={13} />{previewBatchId === batch.id ? '내용 닫기' : '내용 확인'}</button>
-                  {canReview && <><button disabled={busy} onClick={() => void reviewBatch(batch, true)} title="승인" className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded"><Check size={15} /></button><button disabled={busy} onClick={() => void reviewBatch(batch, false)} title="반려" className="p-1.5 text-red-700 hover:bg-red-50 rounded"><X size={15} /></button></>}
+                  {canReview && <><button disabled={busy} onClick={() => openReviewDialog(batch, true)} title="승인" className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded"><Check size={15} /></button><button disabled={busy} onClick={() => openReviewDialog(batch, false)} title="반려" className="p-1.5 text-red-700 hover:bg-red-50 rounded"><X size={15} /></button></>}
                 </div>
                 {!canReview && <span className="basis-full text-textMuted">관리자 승인 필요</span>}
                 {batch.reviewNote && <p className="basis-full text-textMuted">검토 메모: {batch.reviewNote}</p>}
@@ -793,6 +806,27 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           </div>
         </div>
       </div>
+      {reviewTarget && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="import-review-title" className="w-full max-w-md space-y-4 rounded-lg border border-gray-200 bg-white p-5 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="import-review-title" className="text-base font-bold">가져오기 {reviewTarget.approve ? '승인' : '반려'}</h3>
+                <p className="mt-1 break-all text-xs text-textMuted">{reviewTarget.batch.sourceName} · {reviewTarget.batch.rowCount.toLocaleString()}건</p>
+              </div>
+              <button onClick={() => setReviewTarget(null)} disabled={busy} title="닫기" className="rounded p-1 text-textMuted hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-800"><X size={16} /></button>
+            </div>
+            <label className="block space-y-1 text-xs font-semibold" htmlFor="import-review-note">
+              <span>{reviewTarget.approve ? '승인 사유' : '반려 사유'}</span>
+              <textarea id="import-review-note" autoFocus value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} rows={3} className="w-full resize-y rounded border border-gray-300 bg-white p-2 text-sm font-normal text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-white" />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setReviewTarget(null)} disabled={busy} className="rounded border border-gray-300 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-gray-700">취소</button>
+              <button onClick={() => void reviewBatch()} disabled={busy || !reviewNote.trim()} className={`rounded px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 ${reviewTarget.approve ? 'bg-emerald-700' : 'bg-red-700'}`}>{busy ? '저장 중...' : reviewTarget.approve ? '승인 확정' : '반려 확정'}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
