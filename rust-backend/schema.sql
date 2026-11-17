@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS inventory_movements (
 
 CREATE INDEX IF NOT EXISTS inventory_movements_warehouse_created_idx
     ON inventory_movements (warehouse_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS inventory_movements_duplicate_lookup_idx
+    ON inventory_movements (warehouse_id, inventory_item_id, created_at, movement_type, quantity_delta);
 
 CREATE TABLE IF NOT EXISTS inventory_movement_import_batches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -81,6 +83,11 @@ CREATE TABLE IF NOT EXISTS inventory_movement_import_rows (
     note TEXT NOT NULL,
     reference TEXT NOT NULL DEFAULT ''
 );
+
+CREATE INDEX IF NOT EXISTS inventory_movement_import_rows_duplicate_lookup_idx
+    ON inventory_movement_import_rows (batch_id, inventory_item_id, occurred_at, movement_type, quantity_delta);
+CREATE INDEX IF NOT EXISTS inventory_movement_import_batches_warehouse_status_idx
+    ON inventory_movement_import_batches (warehouse_id, status, id);
 
 CREATE TABLE IF NOT EXISTS inventory_audit_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

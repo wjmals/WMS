@@ -328,6 +328,17 @@ struct HistoricalMovementRow {
     reference: Option<String>,
 }
 
+struct PreparedMovementImportRow {
+    source_row: usize,
+    inventory_item_id: Uuid,
+    item_name: String,
+    occurred_at: DateTime<Utc>,
+    movement_type: String,
+    quantity_delta: Decimal,
+    note: String,
+    reference: String,
+}
+
 #[derive(Deserialize)]
 struct MovementImportQuery {
     #[serde(alias = "warehouseId")]
@@ -606,6 +617,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .execute(pool).await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS inventory_movements_warehouse_created_idx ON inventory_movements (warehouse_id, created_at DESC)")
             .execute(pool).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS inventory_movements_duplicate_lookup_idx ON inventory_movements (warehouse_id,inventory_item_id,created_at,movement_type,quantity_delta)")
+            .execute(pool).await?;
         sqlx::query("INSERT INTO inventory_movements (warehouse_id, inventory_item_id, item_name, movement_type, quantity_delta, balance_after, note) SELECT i.warehouse_id, i.id, i.name, 'initial', i.current, i.current, 'inventory ledger initialization' FROM inventory_items i WHERE NOT EXISTS (SELECT 1 FROM inventory_movements m WHERE m.inventory_item_id = i.id)")
             .execute(pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS inventory_audit_events (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE, actor_id TEXT NOT NULL, actor_email TEXT NOT NULL, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, before_data JSONB, after_data JSONB, reason TEXT NOT NULL, source TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
@@ -615,6 +628,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sqlx::query("CREATE TABLE IF NOT EXISTS inventory_movement_import_batches (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE, submitted_by TEXT NOT NULL, submitted_email TEXT NOT NULL, source_name TEXT NOT NULL, row_count INTEGER NOT NULL CHECK (row_count > 0), status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')), reviewed_by TEXT, reviewed_email TEXT, reviewed_at TIMESTAMPTZ, review_note TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
             .execute(pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS inventory_movement_import_rows (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), batch_id UUID NOT NULL REFERENCES inventory_movement_import_batches(id) ON DELETE CASCADE, inventory_item_id UUID NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT, item_name TEXT NOT NULL, occurred_at TIMESTAMPTZ NOT NULL, movement_type TEXT NOT NULL CHECK (movement_type IN ('inbound','outbound','adjustment')), quantity_delta NUMERIC(20,6) NOT NULL CHECK (quantity_delta <> 0), note TEXT NOT NULL, reference TEXT NOT NULL DEFAULT '')")
+            .execute(pool).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS inventory_movement_import_rows_duplicate_lookup_idx ON inventory_movement_import_rows (batch_id,inventory_item_id,occurred_at,movement_type,quantity_delta)")
+            .execute(pool).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS inventory_movement_import_batches_warehouse_status_idx ON inventory_movement_import_batches (warehouse_id,status,id)")
             .execute(pool).await?;
         sqlx::query("ALTER TABLE inventory_movement_import_batches DROP CONSTRAINT IF EXISTS inventory_movement_import_batches_row_count_check")
             .execute(pool).await?;
@@ -1387,9 +1404,33 @@ async fn submit_movement_import(
         created_items += 1;
     }
 
-    let mut duplicate_movements = Vec::new();
-    let mut anchors: std::collections::HashMap<Uuid, Option<DateTime<Utc>>> =
-        std::collections::HashMap::new();
+    let inventory_items = sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal, Option<String>, Decimal)>(
+        "SELECT id,name,unit,package_unit,package_size,pallet_unit,pallet_size FROM inventory_items WHERE warehouse_id=$1 AND (archived_at IS NULL OR pending_batch_id=$2) ORDER BY (pending_batch_id IS NULL),created_at DESC",
+    )
+    .bind(&warehouse_id)
+    .bind(batch_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(internal_error)?;
+    let mut items_by_id = std::collections::HashMap::with_capacity(inventory_items.len());
+    let mut items_by_name = std::collections::HashMap::with_capacity(inventory_items.len());
+    for item in inventory_items {
+        items_by_id.insert(item.0, item.clone());
+        items_by_name.entry(item.1.to_lowercase()).or_insert(item);
+    }
+    let item_ids = items_by_id.keys().copied().collect::<Vec<_>>();
+    let anchor_rows = sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+        "SELECT inventory_item_id,MIN(created_at) FROM inventory_movements WHERE warehouse_id=$1 AND movement_type='initial' AND inventory_item_id=ANY($2) GROUP BY inventory_item_id",
+    )
+    .bind(&warehouse_id)
+    .bind(&item_ids)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(internal_error)?;
+    let anchors = anchor_rows
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut prepared_rows = Vec::with_capacity(row_count);
     for (row_index, row) in input.rows.into_iter().enumerate() {
         let source_row = row.source_row.unwrap_or(row_index + 2);
         if !matches!(
@@ -1420,13 +1461,20 @@ async fn submit_movement_import(
             ));
         }
         let item = if let Some(item_id) = row.inventory_item_id {
-            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size,pallet_unit,pallet_size FROM inventory_items WHERE id=$1 AND warehouse_id=$2 AND (archived_at IS NULL OR pending_batch_id=$3)")
-                .bind(item_id).bind(&warehouse_id).bind(batch_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
-        } else if let Some(item_name) = row.item_name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-            sqlx::query_as::<_, (Uuid, String, String, Option<String>, Decimal, Option<String>, Decimal)>("SELECT id,name,unit,package_unit,package_size,pallet_unit,pallet_size FROM inventory_items WHERE warehouse_id=$1 AND lower(name)=lower($2) AND (archived_at IS NULL OR pending_batch_id=$3) ORDER BY (pending_batch_id IS NULL), created_at DESC LIMIT 1")
-                .bind(&warehouse_id).bind(item_name).bind(batch_id).fetch_optional(&mut *transaction).await.map_err(internal_error)?
-        } else { None }
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "inventory item is unavailable in this warehouse".to_string()))?;
+            items_by_id.get(&item_id)
+        } else {
+            row.item_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|item_name| items_by_name.get(&item_name.to_lowercase()))
+        }
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "inventory item is unavailable in this warehouse".to_string(),
+            )
+        })?;
         let entered_unit = row.quantity_unit.as_deref().unwrap_or(&item.2);
         let multiplier = unit_multiplier(
             entered_unit,
@@ -1448,46 +1496,81 @@ async fn submit_movement_import(
             "outbound" => -magnitude,
             _ => row.quantity * multiplier,
         };
-        let anchor = match anchors.get(&item.0) {
-            Some(cached) => *cached,
-            None => {
-                let found = sqlx::query_scalar::<_, Option<DateTime<Utc>>>("SELECT MIN(created_at) FROM inventory_movements WHERE inventory_item_id=$1 AND movement_type='initial'")
-                    .bind(item.0).fetch_one(&mut *transaction).await.map_err(internal_error)?;
-                anchors.insert(item.0, found);
-                found
-            }
-        };
-        if let Some(anchor) = anchor {
-            if row.occurred_at >= anchor {
+        if let Some(anchor) = anchors.get(&item.0) {
+            if row.occurred_at >= *anchor {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     format!("{}행: '{}' 품목은 {} 이후 장부가 이미 있어 그보다 과거 거래만 가져올 수 있습니다. (거래일: {})", source_row, item.1, anchor.format("%Y-%m-%d %H:%M"), row.occurred_at.format("%Y-%m-%d %H:%M")),
                 ));
             }
         }
-        let duplicate_exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (
-                SELECT 1 FROM inventory_movements
-                WHERE warehouse_id=$1 AND inventory_item_id=$2 AND created_at=$3 AND movement_type=$4 AND quantity_delta=$5
-            ) OR EXISTS (
-                SELECT 1 FROM inventory_movement_import_rows r
-                JOIN inventory_movement_import_batches b ON b.id=r.batch_id
-                WHERE b.warehouse_id=$1 AND r.inventory_item_id=$2 AND r.occurred_at=$3 AND r.movement_type=$4 AND r.quantity_delta=$5 AND b.status='PENDING'
-            )",
-        ).bind(&warehouse_id).bind(item.0).bind(row.occurred_at).bind(&row.movement_type).bind(delta)
-            .fetch_one(&mut *transaction).await.map_err(internal_error)?;
-        if duplicate_exists {
-            duplicate_movements.push(serde_json::json!({
-                "sourceRow": source_row,
-                "itemName": item.1,
-                "occurredAt": row.occurred_at,
-                "movementType": row.movement_type,
-                "quantity": delta
-            }));
+        prepared_rows.push(PreparedMovementImportRow {
+            source_row,
+            inventory_item_id: item.0,
+            item_name: item.1.clone(),
+            occurred_at: row.occurred_at,
+            movement_type: row.movement_type,
+            quantity_delta: delta,
+            note: row.note.trim().to_string(),
+            reference: row.reference.unwrap_or_default(),
+        });
+    }
+
+    let mut duplicate_movements = Vec::new();
+    if !input.allow_duplicates {
+        let mut seen = std::collections::HashSet::new();
+        for row in &prepared_rows {
+            let key = (
+                row.inventory_item_id,
+                row.occurred_at,
+                row.movement_type.as_str(),
+                row.quantity_delta,
+            );
+            if !seen.insert(key) {
+                duplicate_movements.push(serde_json::json!({
+                    "sourceRow": row.source_row,
+                    "itemName": row.item_name,
+                    "occurredAt": row.occurred_at,
+                    "movementType": row.movement_type,
+                    "quantity": row.quantity_delta
+                }));
+            }
         }
-        sqlx::query("INSERT INTO inventory_movement_import_rows (batch_id,inventory_item_id,item_name,occurred_at,movement_type,quantity_delta,note,reference) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(batch_id).bind(item.0).bind(item.1).bind(row.occurred_at).bind(row.movement_type).bind(delta).bind(row.note.trim()).bind(row.reference.unwrap_or_default())
-            .execute(&mut *transaction).await.map_err(internal_error)?;
+
+        for chunk in prepared_rows.chunks(500) {
+            let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT candidate.source_row,candidate.item_name,candidate.occurred_at,candidate.movement_type,candidate.quantity_delta FROM (",
+            );
+            query.push_values(chunk, |mut values, row| {
+                values
+                    .push_bind(row.source_row as i64)
+                    .push_bind(row.inventory_item_id)
+                    .push_bind(&row.item_name)
+                    .push_bind(&row.occurred_at)
+                    .push_bind(&row.movement_type)
+                    .push_bind(row.quantity_delta);
+            });
+            query.push(") AS candidate(source_row,inventory_item_id,item_name,occurred_at,movement_type,quantity_delta) WHERE EXISTS (SELECT 1 FROM inventory_movements m WHERE m.warehouse_id=");
+            query.push_bind(&warehouse_id);
+            query.push(" AND m.inventory_item_id=candidate.inventory_item_id AND m.created_at=candidate.occurred_at AND m.movement_type=candidate.movement_type AND m.quantity_delta=candidate.quantity_delta) OR EXISTS (SELECT 1 FROM inventory_movement_import_rows r JOIN inventory_movement_import_batches b ON b.id=r.batch_id WHERE b.warehouse_id=");
+            query.push_bind(&warehouse_id);
+            query.push(" AND b.status='PENDING' AND r.inventory_item_id=candidate.inventory_item_id AND r.occurred_at=candidate.occurred_at AND r.movement_type=candidate.movement_type AND r.quantity_delta=candidate.quantity_delta)");
+            let database_duplicates = query
+                .build_query_as::<(i64, String, DateTime<Utc>, String, Decimal)>()
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(internal_error)?;
+            for (source_row, item_name, occurred_at, movement_type, quantity) in database_duplicates
+            {
+                duplicate_movements.push(serde_json::json!({
+                    "sourceRow": source_row,
+                    "itemName": item_name,
+                    "occurredAt": occurred_at,
+                    "movementType": movement_type,
+                    "quantity": quantity
+                }));
+            }
+        }
     }
     if !input.allow_duplicates && !duplicate_movements.is_empty() {
         let details =
@@ -1496,6 +1579,27 @@ async fn submit_movement_import(
             StatusCode::CONFLICT,
             format!("DUPLICATE_MOVEMENTS:{}", details),
         ));
+    }
+    for chunk in prepared_rows.chunks(500) {
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "INSERT INTO inventory_movement_import_rows (batch_id,inventory_item_id,item_name,occurred_at,movement_type,quantity_delta,note,reference) ",
+        );
+        query.push_values(chunk, |mut values, row| {
+            values
+                .push_bind(batch_id)
+                .push_bind(row.inventory_item_id)
+                .push_bind(&row.item_name)
+                .push_bind(&row.occurred_at)
+                .push_bind(&row.movement_type)
+                .push_bind(row.quantity_delta)
+                .push_bind(&row.note)
+                .push_bind(&row.reference);
+        });
+        query
+            .build()
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal_error)?;
     }
     transaction.commit().await.map_err(internal_error)?;
     Ok((
@@ -2554,7 +2658,9 @@ mod tests {
         calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
         evaluate_demand_forest, list_inventory_forecast, list_inventory_ledger, load_safety_stock_history,
         next_delivery_state, rebuild_movement_balances, replay_movement_balances,
-        safety_stock_data_is_eligible, AppState, AuthenticatedUser, ForecastQuery, MovementQuery,
+        safety_stock_data_is_eligible, submit_movement_import, AppState, AuthenticatedUser,
+        ForecastQuery, HistoricalMovementImport, HistoricalMovementRow, MovementQuery,
+        StatusCode,
     };
     use chrono::Datelike;
     use rust_decimal::Decimal;
@@ -2822,6 +2928,94 @@ mod tests {
         assert_eq!(second_page.len(), 1);
         assert_ne!(first_page[0]["id"], second_page[0]["id"]);
         assert_ne!(first_page[1]["id"], second_page[0]["id"]);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires WMS_TEST_DATABASE_URL"]
+    async fn batched_movement_import_detects_duplicates_and_stores_rows() {
+        let database_url = std::env::var("WMS_TEST_DATABASE_URL").expect("WMS_TEST_DATABASE_URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_items (id UUID PRIMARY KEY, warehouse_id TEXT NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, package_unit TEXT, package_size NUMERIC NOT NULL, pallet_unit TEXT, pallet_size NUMERIC NOT NULL, archived_at TIMESTAMPTZ, pending_batch_id UUID, created_at TIMESTAMPTZ NOT NULL)")
+            .execute(&mut *connection).await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_movements (warehouse_id TEXT NOT NULL, inventory_item_id UUID NOT NULL, movement_type TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, quantity_delta NUMERIC NOT NULL)")
+            .execute(&mut *connection).await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_movement_import_batches (id UUID PRIMARY KEY, warehouse_id TEXT NOT NULL, submitted_by TEXT NOT NULL, submitted_email TEXT NOT NULL, source_name TEXT NOT NULL, row_count INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING')")
+            .execute(&mut *connection).await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_movement_import_rows (batch_id UUID NOT NULL, inventory_item_id UUID NOT NULL, item_name TEXT NOT NULL, occurred_at TIMESTAMPTZ NOT NULL, movement_type TEXT NOT NULL, quantity_delta NUMERIC NOT NULL, note TEXT NOT NULL, reference TEXT NOT NULL)")
+            .execute(&mut *connection).await.unwrap();
+
+        let item_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO inventory_items VALUES ($1,'test','item','ea',NULL,1,NULL,1,NULL,NULL,now())")
+            .bind(item_id).execute(&mut *connection).await.unwrap();
+        let occurred_at = chrono::DateTime::parse_from_rfc3339("2024-01-02T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        sqlx::query("INSERT INTO inventory_movements VALUES ('test',$1,'outbound',$2,-1),('test',$1,'initial','2025-01-02T00:00:00Z',10)")
+            .bind(item_id).bind(occurred_at).execute(&mut *connection).await.unwrap();
+        drop(connection);
+
+        let make_input = |allow_duplicates, row_count: usize, start_offset: i64| HistoricalMovementImport {
+            warehouse_id: "test".into(),
+            source_name: "test-50k.xlsx".into(),
+            new_items: Vec::new(),
+            allow_duplicates,
+            rows: (0..row_count)
+                .map(|index| HistoricalMovementRow {
+                    source_row: Some(index + 2),
+                    inventory_item_id: Some(item_id),
+                    item_name: None,
+                    occurred_at: occurred_at
+                        + chrono::Duration::seconds(start_offset + index as i64),
+                    movement_type: "outbound".into(),
+                    quantity: Decimal::ONE,
+                    quantity_unit: Some("ea".into()),
+                    note: "test import".into(),
+                    reference: None,
+                })
+                .collect(),
+        };
+        let user = || AuthenticatedUser {
+            id: "test-user".into(),
+            email: "test@example.test".into(),
+            role: "관리자".into(),
+            status: "APPROVED".into(),
+            warehouse_id: Some("test".into()),
+        };
+        let state = || AppState { db: Some(pool.clone()), jwt_secret: String::new() };
+
+        let duplicate_result = submit_movement_import(
+            axum::extract::State(state()),
+            axum::Extension(user()),
+            axum::Json(make_input(false, 1, 0)),
+        )
+        .await;
+        assert!(matches!(duplicate_result, Err((StatusCode::CONFLICT, _))));
+
+        let accepted = submit_movement_import(
+            axum::extract::State(state()),
+            axum::Extension(user()),
+            axum::Json(make_input(true, 1, 0)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(accepted.0, StatusCode::ACCEPTED);
+        let bulk_accepted = submit_movement_import(
+            axum::extract::State(state()),
+            axum::Extension(user()),
+            axum::Json(make_input(false, 50000, 100000)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(bulk_accepted.0, StatusCode::ACCEPTED);
+        let imported_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inventory_movement_import_rows")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(imported_rows, 50001);
         pool.close().await;
     }
 

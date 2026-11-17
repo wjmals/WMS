@@ -110,7 +110,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
     setKnownOperators((current) => Array.from(new Set([...current, ...rows.map((row) => row.operator || SYSTEM_OPERATOR)])).sort());
   }, [ledgerUrl]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (includeLedger = true) => {
     const warehouse = encodeURIComponent(warehouseId);
     if (loadedWarehouseIdRef.current !== warehouseId) {
       setInventoryLoaded(false);
@@ -129,7 +129,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       loadedWarehouseIdRef.current = warehouseId;
       setInventoryLoadError('');
       if (Array.isArray(batchData)) setBatches(batchData);
-      await loadLedger();
+      if (includeLedger) await loadLedger();
     } catch (error) {
       setInventoryLoadError(error instanceof Error ? error.message : '현재 창고 품목 목록을 불러오지 못했습니다.');
       throw error;
@@ -509,13 +509,17 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       }
       if (!response.ok) throw new Error(result.error || `과거 거래를 제출하지 못했습니다 (${response.status}).`);
       setFile(null);
-      await refresh();
       const parts = [];
       if (result.createdItems) parts.push(`신규 품목 ${result.createdItems}개 (안전재고 0)`);
       if (result.rows) parts.push(`거래 ${result.rows}건${visionRows ? ` (비전추정 ${visionRows}건 포함)` : ''}`);
       parts.push('승인 대기로 등록했습니다. 창고 관리자가 승인하면 재고와 장부에 반영됩니다.');
       if (skippedZeroRows) parts.push(`수량 0인 거래 ${skippedZeroRows}건은 변화가 없어 제외했습니다.`);
       setNotice(parts.join(' '));
+      try {
+        await refresh(false);
+      } catch {
+        setNotice(`${parts.join(' ')} 목록 새로고침에 실패했습니다. 새로고침 버튼으로 확인하세요.`);
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '엑셀 파일을 읽지 못했습니다.');
     } finally {
@@ -676,7 +680,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
               <FileSpreadsheet size={14} /> <span className="truncate">{file?.name || '거래 엑셀 선택'}</span>
               <input type="file" accept=".xlsx" className="hidden" onChange={(event) => setFile(event.target.files?.[0] || null)} />
             </label>
-            <button disabled={!file || busy || !inventoryLoaded || !!inventoryLoadError} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '처리 중' : '승인 요청'}</button>
+            <button disabled={!file || busy || !inventoryLoaded || !!inventoryLoadError} onClick={() => void importWorkbook()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Upload size={14} />{busy ? '거래 등록 중...' : '승인 요청'}</button>
           </div>
           {inventoryLoadError ? <p role="alert" className="text-xs text-red-600">{inventoryLoadError}</p> : !inventoryLoaded ? <p role="status" className="text-xs text-textMuted">현재 창고 품목을 불러오는 중입니다.</p> : items.length === 0 ? <p role="status" className="text-xs text-amber-700">현재 창고에 등록된 품목이 없습니다. 엑셀의 신규 품목은 승인 후 등록됩니다.</p> : null}
           {unsetItems.length > 0 && (
