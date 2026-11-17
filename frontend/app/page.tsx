@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
   AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck,
-  Warehouse, Settings, X, Edit2, Sparkles, Barcode, Plus, Trash2, Box
+  Warehouse, Settings, X, Edit2, Sparkles, Barcode, Plus, Trash2, Box, Search
 } from 'lucide-react';
 
 import { useAuth } from '../context/AuthContext';
@@ -17,6 +17,7 @@ import { useBarcodeMode } from '../lib/barcodeMode';
 type InventoryItem = {
   id: string;
   name: string;
+  barcode?: string | null;
   status: string;
   statusLabel: string;
   current: number;
@@ -128,7 +129,8 @@ export default function InventoryDashboard() {
   const [zones, setZones] = useState<ZoneData[]>([]);
   const [movementDays, setMovementDays] = useState<MovementDay[]>([]);
   const [forecastData, setForecastData] = useState<ForecastData | null>(null);
-  const [inventoryView, setInventoryView] = useState<'classic' | 'heatmap'>('classic');
+  const [inventoryView, setInventoryView] = useState<'classic' | 'heatmap' | 'gridHeatmap'>('classic');
+  const [heatmapSearch, setHeatmapSearch] = useState('');
   const [isDarkTheme, setIsDarkTheme] = useState(false);
   const [loading, setLoading] = useState(true);
   const safetyPromptRunningRef = useRef(false);
@@ -479,6 +481,16 @@ export default function InventoryDashboard() {
   const shortageItems = items.filter(i => !isUnsetSafe(i) && i.status === 'shortage');
   const overstockItems = items.filter(i => !isUnsetSafe(i) && i.status === 'overstock');
   const safeItems = items.filter(i => !isUnsetSafe(i) && i.status === 'safe');
+  const heatmapSearchKey = heatmapSearch.trim().toLocaleLowerCase();
+  const gridHeatmapItems = items.filter((item) =>
+    !heatmapSearchKey
+    || item.name.toLocaleLowerCase().includes(heatmapSearchKey)
+    || item.id.toLocaleLowerCase().includes(heatmapSearchKey)
+    || item.barcode?.toLocaleLowerCase().includes(heatmapSearchKey)
+  );
+  const replenishmentItems = gridHeatmapItems
+    .filter((item) => item.safe > 0 && item.current < item.safe)
+    .sort((a, b) => (b.safe - b.current) / b.safe - (a.safe - a.current) / a.safe);
 
   // 구역 수정 모달 열기
   const handleOpenZoneEdit = (zone: ZoneData) => {
@@ -526,6 +538,18 @@ export default function InventoryDashboard() {
     return isDarkTheme
       ? 'border-amber-700 bg-amber-950/60 text-amber-50'
       : 'border-amber-200 bg-amber-50 text-amber-900';
+  };
+
+  const getGridHeatmapBand = (item: InventoryItem) => {
+    if (item.safe <= 0) {
+      return { label: '안전재고 미설정', className: 'bg-slate-300 text-slate-800 dark:bg-slate-700 dark:text-slate-100' };
+    }
+    const coverage = (item.current / item.safe) * 100;
+    if (coverage < 50) return { label: '안전재고 50% 미만', className: 'bg-amber-600 text-white' };
+    if (coverage < 100) return { label: '안전재고 미달', className: 'bg-yellow-300 text-yellow-950' };
+    if (coverage < 150) return { label: '안전재고 100-150%', className: 'bg-sky-200 text-sky-950' };
+    if (coverage < 200) return { label: '안전재고 150-200%', className: 'bg-blue-500 text-white' };
+    return { label: '안전재고 200% 이상', className: 'bg-blue-900 text-white' };
   };
 
   // 구역 설정 저장
@@ -680,7 +704,11 @@ export default function InventoryDashboard() {
 
           <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex rounded-xl border border-gray-200 bg-gray-100 p-1 dark:border-gray-700 dark:bg-gray-800">
-              {(['classic', 'heatmap'] as const).map((mode) => (
+              {([
+                ['classic', '일반 보기'],
+                ['heatmap', '카드 히트맵'],
+                ['gridHeatmap', '격자 히트맵'],
+              ] as const).map(([mode, label]) => (
                 <button
                   key={mode}
                   type="button"
@@ -691,7 +719,7 @@ export default function InventoryDashboard() {
                       : 'text-textMuted'
                   }`}
                 >
-                  {mode === 'classic' ? '일반 보기' : '히트맵 보기'}
+                  {label}
                 </button>
               ))}
             </div>
@@ -711,6 +739,83 @@ export default function InventoryDashboard() {
         {items.length === 0 ? (
           <div className="p-8 text-center bg-gray-50 dark:bg-gray-800/40 rounded-xl space-y-2">
             <p className="text-xs text-textMuted">등록된 재고 품목이 없습니다. 창고 관리자 권한 계정으로 로그인 후 수기로 등록할 수 있습니다.</p>
+          </div>
+        ) : inventoryView === 'gridHeatmap' ? (
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+            <div className="min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="relative min-w-[220px] flex-1">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-textMuted" />
+                  <input
+                    value={heatmapSearch}
+                    onChange={(event) => setHeatmapSearch(event.target.value)}
+                    placeholder="품목코드, 이름, 바코드 검색"
+                    aria-label="히트맵 품목 검색"
+                    className="w-full rounded-md border border-gray-200 bg-white py-2 pl-9 pr-3 text-xs dark:border-gray-700 dark:bg-gray-900"
+                  />
+                </label>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-textMuted" aria-label="안전재고 대비 범례">
+                  {[
+                    ['bg-slate-300 dark:bg-slate-700', '미설정'],
+                    ['bg-amber-600', '50% 미만'],
+                    ['bg-yellow-300', '부족'],
+                    ['bg-sky-200', '100-150%'],
+                    ['bg-blue-500', '150-200%'],
+                    ['bg-blue-900', '200%+'],
+                  ].map(([color, label]) => (
+                    <span key={label} className="inline-flex items-center gap-1 whitespace-nowrap">
+                      <span className={`h-3 w-3 rounded-sm ${color}`} />{label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="max-h-[560px] overflow-auto rounded-md border border-gray-200 p-2 dark:border-gray-800">
+                {gridHeatmapItems.length ? (
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(2rem,1fr))] gap-1">
+                    {gridHeatmapItems.map((item) => {
+                      const band = getGridHeatmapBand(item);
+                      const coverage = item.safe > 0 ? `${Math.round((item.current / item.safe) * 100)}%` : '미설정';
+                      return (
+                        <div
+                          key={item.id}
+                          title={`${item.name} · 현재 ${formatQty(item.current)} ${item.unit} · 안전재고 ${formatQty(item.safe)} ${item.unit} · ${band.label}`}
+                          aria-label={`${item.name}, 현재 ${formatQty(item.current)} ${item.unit}, 안전재고 ${formatQty(item.safe)} ${item.unit}, ${band.label}`}
+                          className={`aspect-square min-w-0 rounded-sm border border-white/60 transition-transform hover:z-10 hover:scale-110 hover:ring-2 hover:ring-primary dark:border-black/20 ${band.className}`}
+                        >
+                          <span className="sr-only">{coverage}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="p-8 text-center text-xs text-textMuted">검색 결과가 없습니다.</p>
+                )}
+              </div>
+              <p className="text-[11px] text-textMuted">타일에 마우스를 올리면 품목명과 현재량, 안전재고를 확인할 수 있습니다. 색상은 안전재고 대비 현재량입니다.</p>
+            </div>
+
+            <aside className="min-w-0 overflow-hidden rounded-md border border-gray-200 dark:border-gray-800">
+              <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+                <h3 className="text-sm font-bold text-textMain dark:text-white">보충 필요</h3>
+                <p className="mt-1 text-[11px] text-textMuted">{replenishmentItems.length}개 품목 · 안전재고 미달률이 큰 순서</p>
+              </div>
+              <div className="max-h-[560px] divide-y divide-gray-100 overflow-y-auto dark:divide-gray-800">
+                {replenishmentItems.length ? replenishmentItems.map((item) => {
+                  const shortfallPct = Math.round(((item.safe - item.current) / item.safe) * 100);
+                  return (
+                    <div key={item.id} className="flex items-start justify-between gap-3 px-4 py-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-semibold" title={item.name}>{item.name}</p>
+                        <p className="mt-1 text-[10px] text-textMuted">현재 {formatQty(item.current)} / 기준 {formatQty(item.safe)} {item.unit}</p>
+                      </div>
+                      <span className="shrink-0 rounded-sm bg-amber-100 px-1.5 py-1 text-[10px] font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200">-{shortfallPct}%</span>
+                    </div>
+                  );
+                }) : (
+                  <p className="p-6 text-center text-xs text-textMuted">보충이 필요한 품목이 없습니다.</p>
+                )}
+              </div>
+            </aside>
           </div>
         ) : inventoryView === 'heatmap' ? (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
