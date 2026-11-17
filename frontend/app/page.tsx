@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
   AlertTriangle, CheckCircle, Package, TrendingUp, ArrowRight, ShieldCheck,
-  Warehouse, Settings, X, Edit2, Camera, Sparkles, Barcode, Plus, Trash2, Box
+  Warehouse, Settings, X, Edit2, Sparkles, Barcode, Plus, Trash2, Box
 } from 'lucide-react';
 
 import { useAuth } from '../context/AuthContext';
@@ -56,10 +56,13 @@ type ForecastItem = {
   historyDays: number;
   safetyStockHistoryDays: number;
   status: string;
+  forecastStatus: string;
+  forecastOutflow1d: number | null;
   forecastOutflow7d: number | null;
-  mapePct: number | null;
-  accuracyPct: number | null;
-  mapeSampleDays: number;
+  forecastOutflow30d: number | null;
+  wapePct: number | null;
+  baselineWapePct: number | null;
+  validationSamples: number;
   outboundDays: number;
   safetyStockMode: 'manual' | 'auto';
   safetyStockPrompted: boolean;
@@ -72,14 +75,19 @@ type ForecastItem = {
 
 type ForecastData = {
   model: string;
+  modelType: string;
+  baselineModel: string;
   status: string;
   minimumHistoryDays: number;
-  mapeSampleCount?: number;
-  horizonBacktests?: Array<{ horizonDays: number; sampleCount: number; mapePct: number | null; accuracyPct: number | null }>;
-  mapePct: number | null;
-  accuracyPct: number | null;
-  targetAccuracyPct: number;
-  targetMet: boolean;
+  lookbackDays: number;
+  validationWindowDays: number;
+  minimumTrainingSamples: number;
+  validationSamples: number;
+  itemsWithEvaluableWape: number;
+  wapePct: number | null;
+  baselineWapePct: number | null;
+  relativeImprovementPct: number | null;
+  horizonBacktests?: Array<{ horizonDays: number; sampleCount: number; wapePct: number | null; baselineWapePct: number | null; relativeImprovementPct: number | null; forecastVolume: number }>;
   stockoutRatePct: number | null;
   stockoutMetricReason: string;
   items: ForecastItem[];
@@ -120,6 +128,8 @@ export default function InventoryDashboard() {
   const [zones, setZones] = useState<ZoneData[]>([]);
   const [movementDays, setMovementDays] = useState<MovementDay[]>([]);
   const [forecastData, setForecastData] = useState<ForecastData | null>(null);
+  const [inventoryView, setInventoryView] = useState<'classic' | 'heatmap'>('classic');
+  const [isDarkTheme, setIsDarkTheme] = useState(false);
   const [loading, setLoading] = useState(true);
   const safetyPromptRunningRef = useRef(false);
   const safetyPromptedItemsRef = useRef(new Set<string>());
@@ -164,7 +174,7 @@ export default function InventoryDashboard() {
         fetch(`/api/inventory?warehouseId=${warehouseId}`),
         fetch(`/api/zones?warehouseId=${warehouseId}`),
         fetch(`/api/inventory/movements?warehouseId=${warehouseId}&days=30`),
-        fetch(`/api/inventory/forecast?warehouseId=${warehouseId}&historyDays=90`)
+        fetch(`/api/inventory/forecast?warehouseId=${warehouseId}&historyDays=1095`)
       ]);
       const invData = await invRes.json();
       const zoneData = await zoneRes.json();
@@ -411,14 +421,14 @@ export default function InventoryDashboard() {
             </div>
 
             <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl p-6 shadow-sm hover:shadow-md transition-all space-y-3">
-              <div className="w-12 h-12 rounded-2xl bg-purple-50 dark:bg-purple-950/40 text-purple-600 flex items-center justify-center font-bold">
-                <Camera className="w-6 h-6" />
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 flex items-center justify-center font-bold">
+                <Sparkles className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                2. 이미지 레퍼런스 기반 비전 분석
+                2. 출고 이력 기반 AI 수요예측
               </h3>
               <p className="text-xs text-textMuted leading-relaxed">
-                선택한 카메라 프레임을 Groq Vision에 보내 분석하고 결과를 이력으로 저장합니다. API 키가 필요하며 분석 결과가 검증된 실측값을 뜻하지는 않습니다.
+                승인된 일별 출고 이력으로 Random Forest를 학습해 1·7·30일 출고량을 추정하고, 마지막 180일 홀드아웃에서 이동평균 기준선과 비교합니다.
               </p>
             </div>
 
@@ -492,6 +502,30 @@ export default function InventoryDashboard() {
         ? prev.filter(i => i !== itemName)
         : [...prev, itemName]
     );
+  };
+
+  const getHeatmapCardClasses = (item: InventoryItem) => {
+    if (isUnsetSafe(item)) {
+      return isDarkTheme
+        ? 'border-slate-700 bg-slate-900/60 text-slate-100'
+        : 'border-slate-200 bg-slate-100 text-slate-800';
+    }
+
+    if (item.status === 'safe') {
+      return isDarkTheme
+        ? 'border-emerald-700 bg-emerald-950/60 text-emerald-50'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-900';
+    }
+
+    if (item.status === 'shortage') {
+      return isDarkTheme
+        ? 'border-red-700 bg-red-950/60 text-red-50'
+        : 'border-red-200 bg-red-50 text-red-900';
+    }
+
+    return isDarkTheme
+      ? 'border-amber-700 bg-amber-950/60 text-amber-50'
+      : 'border-amber-200 bg-amber-50 text-amber-900';
   };
 
   // 구역 설정 저장
@@ -635,7 +669,7 @@ export default function InventoryDashboard() {
 
       {/* 보관 재고 품목 목록 & 수량 관리 테이블 */}
       <section className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-6 shadow-sm space-y-4">
-        <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-800 pb-3">
+        <div className="flex flex-col gap-3 border-b border-gray-100 dark:border-gray-800 pb-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-lg font-bold text-textMain dark:text-white flex items-center gap-2">
               <Box className="w-5 h-5 text-emerald-600" />
@@ -644,20 +678,94 @@ export default function InventoryDashboard() {
             <p className="text-xs text-textMuted mt-0.5">실재고 수치 및 창고 관리자 수기 데이터 편집</p>
           </div>
 
-          {canRegisterInventory && (
-            <button
-              onClick={() => setShowAddInvModal(true)}
-              className="px-3.5 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-emerald-100 transition-all"
-            >
-              <Plus size={14} />
-              품목 수기 추가
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-xl border border-gray-200 bg-gray-100 p-1 dark:border-gray-700 dark:bg-gray-800">
+              {(['classic', 'heatmap'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setInventoryView(mode)}
+                  className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition-all ${
+                    inventoryView === mode
+                      ? 'bg-white text-primary shadow-sm dark:bg-gray-900 dark:text-emerald-300'
+                      : 'text-textMuted'
+                  }`}
+                >
+                  {mode === 'classic' ? '일반 보기' : '히트맵 보기'}
+                </button>
+              ))}
+            </div>
+
+            {canRegisterInventory && (
+              <button
+                onClick={() => setShowAddInvModal(true)}
+                className="px-3.5 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-emerald-100 transition-all"
+              >
+                <Plus size={14} />
+                품목 수기 추가
+              </button>
+            )}
+          </div>
         </div>
 
         {items.length === 0 ? (
           <div className="p-8 text-center bg-gray-50 dark:bg-gray-800/40 rounded-xl space-y-2">
             <p className="text-xs text-textMuted">등록된 재고 품목이 없습니다. 창고 관리자 권한 계정으로 로그인 후 수기로 등록할 수 있습니다.</p>
+          </div>
+        ) : inventoryView === 'heatmap' ? (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {items.map((item) => {
+              const ratio = item.safe > 0 ? Math.min(1, (item.current || 0) / item.safe) : 0;
+              const heatClass = getHeatmapCardClasses(item);
+              return (
+                <div key={item.id} className={`rounded-2xl border p-4 shadow-sm transition-all ${heatClass}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">📦</span>
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-wide opacity-80">{item.unit}</p>
+                        <p className="text-base font-bold">{item.name}</p>
+                      </div>
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${isUnsetSafe(item) ? 'bg-white/20 text-current' : 'bg-black/10 text-current'}`}>
+                      {isUnsetSafe(item) ? '미설정' : item.statusLabel}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+                    <div className="rounded-xl bg-black/5 dark:bg-white/5 p-2">
+                      <p className="text-[11px] opacity-75">현재</p>
+                      <p className="mt-1 font-bold font-mono">{formatQty(item.current)}</p>
+                    </div>
+                    <div className="rounded-xl bg-black/5 dark:bg-white/5 p-2">
+                      <p className="text-[11px] opacity-75">안전</p>
+                      <p className="mt-1 font-bold font-mono">{formatQty(item.safe)}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="mb-1 flex items-center justify-between text-[11px] font-bold opacity-80">
+                      <span>재고 비율</span>
+                      <span>{isUnsetSafe(item) ? 'N/A' : `${Math.min(100, Math.round(ratio * 100))}%`}</span>
+                    </div>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                      <div
+                        className={`h-full rounded-full ${
+                          item.status === 'shortage'
+                            ? 'bg-red-500'
+                            : item.status === 'overstock'
+                            ? 'bg-amber-500'
+                            : item.status === 'safe'
+                            ? 'bg-emerald-500'
+                            : 'bg-slate-500'
+                        }`}
+                        style={{ width: `${isUnsetSafe(item) ? 0 : Math.max(8, Math.min(100, ratio * 100))}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -871,9 +979,9 @@ export default function InventoryDashboard() {
       <section className="border-y border-gray-200 dark:border-gray-800 py-6 space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-xs font-bold uppercase text-primary">Demand baseline · not an AI forecast</p>
-            <h2 className="text-xl font-bold text-textMain dark:text-white">7일 출고 기준선 · 28일 이동평균</h2>
-            <p className="mt-1 text-xs text-textMuted">최근 28일 출고 장부의 이동평균입니다. 학습형 AI 모델이 아니며, 출고가 없는 날도 계산에 포함합니다.</p>
+            <p className="text-xs font-bold uppercase text-primary">Demand forecast</p>
+            <h2 className="text-xl font-bold text-textMain dark:text-white">출고 수요예측 · 28일 기준선 모델</h2>
+            <p className="mt-1 text-xs text-textMuted">최근 28일 평균 출고량을 기준으로 향후 1·7·30일 수요를 추정합니다. 실제 장부 기반의 단순하고 안정적인 기준 예측입니다.</p>
           </div>
           <span className={`rounded-lg px-3 py-2 text-xs font-bold ${forecastData?.status === 'measured' ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>
             {forecastData?.status === 'measured' ? '백테스트 가능' : '실측 데이터 부족'}
@@ -881,9 +989,9 @@ export default function InventoryDashboard() {
         </div>
         <div className="grid gap-4 md:grid-cols-3">
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
-            <p className="text-xs text-textMuted">최근 7일 일별 검증 MAPE</p>
-            <p className="mt-2 text-lg font-bold">{forecastData?.mapePct == null ? '측정 불가' : `${forecastData.mapePct.toFixed(1)}% MAPE`}</p>
-            <p className="text-xs text-textMuted">출고일 표본 {forecastData?.mapeSampleCount ?? 0}건 · 목표 정확도 {forecastData?.targetAccuracyPct ?? 92}% {forecastData?.status === 'measured' ? (forecastData.targetMet ? '달성' : '미달성') : '평가 대기'}</p>
+            <p className="text-xs text-textMuted">7일 AI 예측 오차 (WAPE)</p>
+            <p className="mt-2 text-lg font-bold">{forecastData?.wapePct == null ? '측정 불가' : `${forecastData.wapePct.toFixed(1)}%`}</p>
+            <p className="text-xs text-textMuted">AI 학습모델 대비 28일 평균 기준선 · 검증 {forecastData?.validationSamples ?? 0}개 · 개선 {forecastData?.relativeImprovementPct == null ? '측정 불가' : `${forecastData.relativeImprovementPct.toFixed(1)}%`}</p>
           </div>
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
             <p className="text-xs text-textMuted">품절률 KPI</p>
@@ -893,25 +1001,25 @@ export default function InventoryDashboard() {
             <p className="text-[11px] text-textMuted">현재 시점의 품목 비율이며, 주문 미충족 기준 품절률은 아닙니다.</p>
           </div>
           <div className="border border-gray-200 dark:border-gray-800 rounded-xl p-4">
-            <p className="text-xs text-textMuted">품목별 7일 기준 출고량</p>
+            <p className="text-xs text-textMuted">품목별 AI 출고 예측</p>
             {forecastData?.items.length ? (
-              <ul className="mt-2 space-y-1 text-xs">
-                {forecastData.items.slice(0, 4).map((forecast) => <li key={forecast.itemId} className="flex justify-between gap-2"><span className="truncate">{forecast.itemName}</span><span className="shrink-0 font-mono">{forecast.forecastOutflow7d == null ? `기록 ${forecast.historyDays}일` : `${formatQty(forecast.forecastOutflow7d)} ${forecast.unit}`}</span></li>)}
-              </ul>
+              <div className="mt-2 max-h-36 overflow-auto"><table className="w-full text-xs"><thead className="text-textMuted"><tr><th className="py-1 text-left">품목</th><th className="text-right">1일</th><th className="text-right">7일</th><th className="text-right">30일</th></tr></thead><tbody>
+                {forecastData.items.slice(0, 8).map((forecast) => <tr key={forecast.itemId} className="border-t border-gray-100 dark:border-gray-800"><td className="max-w-[100px] truncate py-1">{forecast.itemName}</td><td className="text-right font-mono">{forecast.forecastOutflow1d == null ? '—' : formatQty(forecast.forecastOutflow1d)}</td><td className="text-right font-mono">{forecast.forecastOutflow7d == null ? '—' : formatQty(forecast.forecastOutflow7d)}</td><td className="text-right font-mono">{forecast.forecastOutflow30d == null ? '—' : formatQty(forecast.forecastOutflow30d)}</td></tr>)}
+              </tbody></table></div>
             ) : <p className="mt-2 text-xs text-textMuted">활성 품목 또는 장부가 없습니다.</p>}
           </div>
         </div>
         <div className="overflow-x-auto border-y border-gray-200 dark:border-gray-800 py-3">
-          <h3 className="text-sm font-bold">예측 기간별 과거 검증</h3>
+          <h3 className="text-sm font-bold">Random Forest 시간순 홀드아웃 검증</h3>
           <table className="mt-2 w-full min-w-[380px] text-left text-xs">
-            <thead className="text-textMuted"><tr><th className="py-2">예측 기간</th><th>MAPE</th><th>참고 정확도</th><th>검증 표본</th></tr></thead>
+            <thead className="text-textMuted"><tr><th className="py-2">예측 기간</th><th>AI WAPE</th><th>28일 평균 WAPE</th><th>AI 개선</th><th>표본</th></tr></thead>
             <tbody>{[1, 7, 30].map((days) => {
               const result = forecastData?.horizonBacktests?.find((entry) => entry.horizonDays === days);
-              return <tr key={days} className="border-t border-gray-100 dark:border-gray-800"><td className="py-2">{days}일</td><td>{result?.mapePct == null ? '측정 불가' : `${result.mapePct.toFixed(1)}%`}</td><td>{result?.accuracyPct == null ? '측정 불가' : `${result.accuracyPct.toFixed(1)}%`}</td><td>{result?.sampleCount ?? 0}건</td></tr>;
+              return <tr key={days} className="border-t border-gray-100 dark:border-gray-800"><td className="py-2">{days}일</td><td>{result?.wapePct == null ? '측정 불가' : `${result.wapePct.toFixed(1)}%`}</td><td>{result?.baselineWapePct == null ? '측정 불가' : `${result.baselineWapePct.toFixed(1)}%`}</td><td>{result?.relativeImprovementPct == null ? '측정 불가' : `${result.relativeImprovementPct.toFixed(1)}%`}</td><td>{result?.sampleCount ?? 0}건</td></tr>;
             })}</tbody>
           </table>
-          <p className="text-[11px] text-textMuted">최근 최대 89일의 출고 장부로 구간을 하루씩 이동하며 검증합니다. 실제 출고 합계가 0인 구간은 MAPE에서 제외합니다. 참고 정확도는 최저 0으로 제한한 100 - MAPE이며, 정확도 상한이나 미래 성능을 보장하지 않습니다.</p>
-          <p className="mt-1 text-[11px] text-textMuted">정확도 개선에는 실제 주문·품절·계절성 데이터 확보와 별도 기간의 모델 비교 검증이 필요합니다.</p>
+          <p className="text-[11px] text-textMuted">최근 3년 출고 이력으로 학습하고 마지막 180일을 학습에서 제외해 검증합니다. WAPE는 전체 출고량 대비 절대 오차이며, 개선율은 28일 평균 기준선 대비 오차 감소 비율입니다. 0 출고일도 오차에 포함합니다.</p>
+          <p className="mt-1 text-[11px] text-textMuted">모델 학습 표본 {forecastData?.itemsWithEvaluableWape ?? 0}개 품목 · 최소 학습 창 {forecastData?.minimumTrainingSamples ?? 60}개. 과거 백테스트는 미래 성능을 보장하지 않습니다.</p>
         </div>
         <div className="border-b border-gray-200 dark:border-gray-800 pb-3 text-xs"><strong>적시 출고율: 산출 불가</strong><p className="mt-1 text-textMuted">출고 요청별 약속 시각과 실제 출고 시각을 연결해 기록해야 계산할 수 있습니다.</p></div>
       </section>

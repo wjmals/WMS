@@ -13,13 +13,17 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rand::RngCore;
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
+use smartcore::{
+    ensemble::random_forest_regressor::{RandomForestRegressor, RandomForestRegressorParameters},
+    linalg::basic::matrix::DenseMatrix,
+};
 use std::{env, net::SocketAddr};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use uuid::Uuid;
@@ -264,6 +268,25 @@ struct ForecastQuery {
     history_days: Option<i32>,
 }
 
+const FORECAST_LOOKBACK_DAYS: usize = 90;
+const FORECAST_VALIDATION_DAYS: usize = 180;
+const FORECAST_ORIGIN_STEP_DAYS: usize = 7;
+const FORECAST_MIN_TRAINING_SAMPLES: usize = 60;
+type DemandForest = RandomForestRegressor<f64, f64, DenseMatrix<f64>, Vec<f64>>;
+
+struct ForecastModelResult {
+    predictions: Vec<Option<Decimal>>,
+    baseline_predictions: Vec<Option<Decimal>>,
+    item_wape: Vec<Option<Decimal>>,
+    item_baseline_wape: Vec<Option<Decimal>>,
+    item_samples: Vec<usize>,
+    wape: Option<Decimal>,
+    baseline_wape: Option<Decimal>,
+    relative_improvement: Option<Decimal>,
+    sample_count: usize,
+    actual_volume: Decimal,
+}
+
 #[derive(Deserialize)]
 struct HistoricalMovementImport {
     #[serde(alias = "warehouseId")]
@@ -474,6 +497,46 @@ struct AnalysisResult {
     reason: String,
 }
 
+async fn validate_database_state(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let allow_empty = env::var("ALLOW_EMPTY_DATABASE")
+        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+        .unwrap_or(false);
+
+    let critical_tables = [
+        "warehouses",
+        "inventory_items",
+        "inventory_movements",
+        "users",
+        "warehouse_zones",
+    ];
+
+    let mut empty_tables = Vec::new();
+    for table in critical_tables {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(pool)
+            .await?;
+        if count == 0 {
+            empty_tables.push(table.to_string());
+        }
+    }
+
+    if !empty_tables.is_empty() && !allow_empty {
+        return Err(format!(
+            "Critical database tables are empty: {}. This usually means the database was reset or connected to a blank Postgres instance. Restore a backup or set ALLOW_EMPTY_DATABASE=true only for a deliberate local bootstrap.",
+            empty_tables.join(", ")
+        ).into());
+    }
+
+    if !empty_tables.is_empty() {
+        tracing::warn!(
+            "Starting with empty bootstrap tables in a controlled local mode: {}. Set ALLOW_EMPTY_DATABASE=false for production restores.",
+            empty_tables.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::from_filename(".env.local").ok();
@@ -494,6 +557,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     if let Some(pool) = &db {
+        validate_database_state(pool).await?;
         let schema_sql = include_str!("../schema.sql");
         sqlx::raw_sql(schema_sql).execute(pool).await?;
         sqlx::query("ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS barcode TEXT")
@@ -607,18 +671,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(list_zones).post(save_zone).delete(delete_zone),
         )
         .route(
-            "/api/vision",
-            get(list_references)
-                .post(create_reference)
-                .delete(delete_reference),
-        )
-        .route("/api/vision/import", axum::routing::post(import_references))
-        .route("/api/vision/estimates", get(list_vision_estimates))
-        .route(
-            "/api/vision/estimates/review",
-            axum::routing::post(review_vision_estimate),
-        )
-        .route(
             "/api/delivery",
             get(list_delivery)
                 .post(create_delivery)
@@ -626,10 +678,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .put(advance_delivery),
         )
         .route("/api/delivery/track", axum::routing::post(track_delivery))
-        .route(
-            "/api/monitor",
-            get(list_monitor_logs).post(analyze_monitor_image),
-        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             authenticate_request,
@@ -1264,14 +1312,14 @@ async fn submit_movement_import(
     axum::Extension(user): axum::Extension<AuthenticatedUser>,
     Json(input): Json<HistoricalMovementImport>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, String)> {
-    if input.rows.len() > 5000
-        || input.new_items.len() > 5000
-        || (input.rows.is_empty() && input.new_items.is_empty())
+    if input.rows.is_empty()
+        || input.rows.len() > 50000
+        || input.new_items.len() > 50000
         || input.source_name.trim().is_empty()
     {
         return Err((
             StatusCode::BAD_REQUEST,
-            "sourceName and up to 5000 rows or new items are required".to_string(),
+            "sourceName and 1 to 50000 transaction rows are required".to_string(),
         ));
     }
     let warehouse_id = if user.role == "서버 관리자" {
@@ -1469,7 +1517,7 @@ async fn list_inventory_ledger(
     if query.before.is_some() != query.before_id.is_some() {
         return Err((StatusCode::BAD_REQUEST, "before와 beforeId를 함께 지정해야 합니다.".to_string()));
     }
-    let limit = query.limit.unwrap_or(2000).clamp(1, 20000);
+    let limit = query.limit.unwrap_or(2000).clamp(1, 50000);
     let days = query.days.map(|value| value.clamp(1, 3650));
     let operator = query
         .operator
@@ -1551,7 +1599,7 @@ async fn list_movement_import_rows(
         ));
     }
     let rows = sqlx::query_as::<_, (String, DateTime<Utc>, String, Decimal, String, String)>(
-        "SELECT item_name,occurred_at,movement_type,quantity_delta,note,reference FROM inventory_movement_import_rows WHERE batch_id=$1 ORDER BY occurred_at,id LIMIT 20000",
+        "SELECT item_name,occurred_at,movement_type,quantity_delta,note,reference FROM inventory_movement_import_rows WHERE batch_id=$1 ORDER BY occurred_at,id LIMIT 50000",
     ).bind(query.batch_id).fetch_all(&db).await.map_err(internal_error)?;
     let new_items = sqlx::query_as::<_, (String, Option<String>, String, Decimal, Decimal)>(
         "SELECT name,barcode,unit,current,safe FROM inventory_items WHERE pending_batch_id=$1 ORDER BY name",
@@ -1933,18 +1981,234 @@ async fn list_inventory_movements(
     Ok(Json(rows))
 }
 
+fn demand_features(
+    histories: &[Vec<(chrono::NaiveDate, Decimal)>],
+    item_index: usize,
+    end_index: usize,
+) -> Option<(Vec<f64>, f64)> {
+    let history = histories.get(item_index)?;
+    let end = end_index.min(history.len());
+    if end < FORECAST_LOOKBACK_DAYS {
+        return None;
+    }
+    let values = history[end - FORECAST_LOOKBACK_DAYS..end]
+        .iter()
+        .map(|(_, quantity)| quantity.to_f64())
+        .collect::<Option<Vec<_>>>()?;
+    let scale = (values.iter().sum::<f64>() / FORECAST_LOOKBACK_DAYS as f64).max(1.0);
+    let mut features = Vec::with_capacity(histories.len() + 26);
+    features.extend((0..histories.len()).map(|index| f64::from(index == item_index)));
+    for lag in [1_usize, 7, 14, 28, 56, 90] {
+        features.push(values[FORECAST_LOOKBACK_DAYS - lag] / scale);
+    }
+    for window in [7_usize, 14, 28, 56, 90] {
+        let sample = &values[FORECAST_LOOKBACK_DAYS - window..];
+        features.push(sample.iter().sum::<f64>() / scale);
+    }
+    let last_28 = &values[FORECAST_LOOKBACK_DAYS - 28..];
+    let mean_28 = last_28.iter().sum::<f64>() / 28.0;
+    let std_28 = (last_28.iter().map(|value| (value - mean_28).powi(2)).sum::<f64>() / 28.0).sqrt();
+    features.push(std_28 / scale);
+    features.push(values.iter().filter(|value| **value > 0.0).count() as f64 / FORECAST_LOOKBACK_DAYS as f64);
+    features.push(scale.ln_1p());
+    let forecast_date = if end < history.len() {
+        history[end].0
+    } else {
+        history.last()?.0 + chrono::Duration::days(1)
+    };
+    let year_position = forecast_date.ordinal0() as f64 / 365.25;
+    let weekday_position = forecast_date.weekday().num_days_from_monday() as f64 / 7.0;
+    let month_position = (forecast_date.month0() as f64 + 0.5) / 12.0;
+    for position in [year_position, weekday_position, month_position] {
+        features.push((std::f64::consts::TAU * position).sin());
+        features.push((std::f64::consts::TAU * position).cos());
+    }
+    Some((features, scale))
+}
+
+fn fit_demand_forest(features: &[Vec<f64>], targets: &[f64]) -> Option<DemandForest> {
+    if features.len() < FORECAST_MIN_TRAINING_SAMPLES || features.len() != targets.len() {
+        return None;
+    }
+    let matrix = DenseMatrix::from_2d_vec(&features.to_vec()).ok()?;
+    RandomForestRegressor::fit(
+        &matrix,
+        &targets.to_vec(),
+        RandomForestRegressorParameters::default()
+            .with_n_trees(48)
+            .with_max_depth(10)
+            .with_min_samples_leaf(3)
+            .with_seed(42),
+    )
+    .ok()
+}
+
+fn evaluate_demand_forest(
+    histories: &[Vec<(chrono::NaiveDate, Decimal)>],
+    horizon: usize,
+) -> ForecastModelResult {
+    let mut train_features = Vec::new();
+    let mut train_targets = Vec::new();
+    let mut validation_features = Vec::new();
+    let mut validation_actual = Vec::new();
+    let mut validation_baseline = Vec::new();
+    let mut validation_items = Vec::new();
+
+    for (item_index, history) in histories.iter().enumerate() {
+        let validation_days = FORECAST_VALIDATION_DAYS.min(
+            history.len().saturating_sub(FORECAST_LOOKBACK_DAYS + horizon),
+        );
+        let split_index = history.len().saturating_sub(validation_days);
+        for end_index in (FORECAST_LOOKBACK_DAYS..=split_index.saturating_sub(horizon))
+            .step_by(FORECAST_ORIGIN_STEP_DAYS)
+        {
+            let Some((features, scale)) = demand_features(histories, item_index, end_index) else {
+                continue;
+            };
+            let actual = history[end_index..end_index + horizon]
+                .iter()
+                .map(|(_, value)| value.to_f64())
+                .collect::<Option<Vec<_>>>();
+            let Some(actual) = actual else { continue };
+            train_features.push(features);
+            train_targets.push(actual.iter().sum::<f64>() / scale);
+        }
+        if validation_days == 0 {
+            continue;
+        }
+        for end_index in (split_index..=history.len().saturating_sub(horizon))
+            .step_by(horizon.max(1))
+        {
+            let Some((features, scale)) = demand_features(histories, item_index, end_index) else {
+                continue;
+            };
+            let actual = history[end_index..end_index + horizon]
+                .iter()
+                .map(|(_, value)| value.to_f64())
+                .collect::<Option<Vec<_>>>();
+            let baseline = history[end_index.saturating_sub(28)..end_index]
+                .iter()
+                .map(|(_, value)| value.to_f64())
+                .collect::<Option<Vec<_>>>();
+            let (Some(actual), Some(baseline)) = (actual, baseline) else { continue };
+            validation_features.push((features, scale));
+            validation_actual.push(actual.iter().sum::<f64>());
+            validation_baseline.push(baseline.iter().sum::<f64>() / baseline.len() as f64 * horizon as f64);
+            validation_items.push(item_index);
+        }
+    }
+
+    let mut item_error = vec![0.0; histories.len()];
+    let mut item_baseline_error = vec![0.0; histories.len()];
+    let mut item_actual = vec![0.0; histories.len()];
+    let mut item_samples = vec![0; histories.len()];
+    let mut ai_error = 0.0;
+    let mut baseline_error = 0.0;
+    let mut actual_volume = 0.0;
+    let mut final_features = Vec::new();
+    let mut final_targets = Vec::new();
+    for (item_index, history) in histories.iter().enumerate() {
+        for end_index in (FORECAST_LOOKBACK_DAYS..history.len().saturating_sub(horizon) + 1)
+            .step_by(FORECAST_ORIGIN_STEP_DAYS)
+        {
+            let Some((features, scale)) = demand_features(histories, item_index, end_index) else {
+                continue;
+            };
+            let Some(actual) = history[end_index..end_index + horizon]
+                .iter()
+                .map(|(_, value)| value.to_f64())
+                .collect::<Option<Vec<_>>>()
+            else { continue };
+            final_features.push(features);
+            final_targets.push(actual.iter().sum::<f64>() / scale);
+        }
+    }
+
+    let validation_model = fit_demand_forest(&train_features, &train_targets);
+    if let Some(model) = validation_model {
+        let features = validation_features.iter().map(|(row, _)| row.clone()).collect::<Vec<_>>();
+        if let Ok(matrix) = DenseMatrix::from_2d_vec(&features) {
+            if let Ok(predictions) = model.predict(&matrix) {
+                for (index, prediction) in predictions.iter().enumerate() {
+                    let predicted = (prediction.max(0.0) * validation_features[index].1).max(0.0);
+                    let actual = validation_actual[index];
+                    let baseline = validation_baseline[index];
+                    ai_error += (predicted - actual).abs();
+                    baseline_error += (baseline - actual).abs();
+                    actual_volume += actual;
+                    let item_index = validation_items[index];
+                    item_error[item_index] += (predicted - actual).abs();
+                    item_baseline_error[item_index] += (baseline - actual).abs();
+                    item_actual[item_index] += actual;
+                    item_samples[item_index] += 1;
+                }
+            }
+        }
+    }
+
+    let final_model = fit_demand_forest(&final_features, &final_targets);
+    let mut predictions = vec![None; histories.len()];
+    let mut baseline_predictions = vec![None; histories.len()];
+    for (item_index, history) in histories.iter().enumerate() {
+        if history.len() >= 28 {
+            let baseline = history.iter().rev().take(28).map(|(_, value)| *value).sum::<Decimal>()
+                * Decimal::from(horizon as u64) / Decimal::from(28u32);
+            baseline_predictions[item_index] = Some(baseline);
+        }
+    }
+    if let Some(model) = final_model {
+        let latest_features = histories
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| demand_features(histories, index, histories[index].len()).map(|(features, scale)| (index, features, scale)))
+            .collect::<Vec<_>>();
+        let matrix_data = latest_features.iter().map(|(_, features, _)| features.clone()).collect::<Vec<_>>();
+        if let Ok(matrix) = DenseMatrix::from_2d_vec(&matrix_data) {
+            if let Ok(model_predictions) = model.predict(&matrix) {
+                for ((item_index, _, scale), prediction) in latest_features.into_iter().zip(model_predictions) {
+                    let value = (prediction.max(0.0) * scale).max(0.0);
+                    predictions[item_index] = Decimal::from_f64_retain(value)
+                        .map(|quantity| quantity.round_dp_with_strategy(6, rust_decimal::RoundingStrategy::ToPositiveInfinity));
+                }
+            }
+        }
+    }
+
+    let wape = (actual_volume > 0.0).then(|| Decimal::from_f64_retain(ai_error / actual_volume * 100.0)).flatten();
+    let baseline_wape = (actual_volume > 0.0).then(|| Decimal::from_f64_retain(baseline_error / actual_volume * 100.0)).flatten();
+    let relative_improvement = match (wape, baseline_wape) {
+        (Some(model), Some(baseline)) if baseline > Decimal::ZERO => Some((baseline - model) * Decimal::from(100u32) / baseline),
+        _ => None,
+    };
+    ForecastModelResult {
+        predictions,
+        baseline_predictions,
+        item_wape: item_error.iter().zip(item_actual.iter()).map(|(error, actual)| {
+            (*actual > 0.0).then(|| Decimal::from_f64_retain(error / actual * 100.0)).flatten()
+        }).collect(),
+        item_baseline_wape: item_baseline_error.iter().zip(item_actual.iter()).map(|(error, actual)| {
+            (*actual > 0.0).then(|| Decimal::from_f64_retain(error / actual * 100.0)).flatten()
+        }).collect(),
+        item_samples,
+        wape,
+        baseline_wape,
+        relative_improvement,
+        sample_count: validation_actual.len(),
+        actual_volume: Decimal::from_f64_retain(actual_volume).unwrap_or(Decimal::ZERO),
+    }
+}
+
 async fn list_inventory_forecast(
     State(state): State<AppState>,
     Query(query): Query<ForecastQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    const TRAINING_DAYS: usize = 28;
     const HOLDOUT_DAYS: usize = 7;
     let db = state.db.ok_or_else(database_not_configured)?;
     let warehouse_id = query
         .warehouse_id
         .unwrap_or_else(|| "wh_wjmals".to_string());
-    let history_days = query.history_days.unwrap_or(90).clamp(35, 365);
-    let safety_history_days = history_days.max(181);
+    let history_days = query.history_days.unwrap_or(1095).clamp(35, 1095);
+    let model_history_days = history_days.max((FORECAST_LOOKBACK_DAYS + FORECAST_VALIDATION_DAYS + 1) as i32);
     let rows = sqlx::query_as::<_, (Uuid, String, String, Decimal, String, bool, i32, Decimal, chrono::NaiveDate, Decimal)>(
         "WITH item_coverage AS (
             SELECT i.id, i.name, i.unit, i.safe, i.safety_stock_mode, i.safety_stock_prompted, i.safety_stock_lead_time_days, i.safety_stock_service_level,
@@ -1967,7 +2231,7 @@ async fn list_inventory_forecast(
                 AND m.created_at < calendar.day + interval '1 day'
           GROUP BY c.id, c.name, c.unit, c.safe, c.safety_stock_mode, c.safety_stock_prompted, c.safety_stock_lead_time_days, c.safety_stock_service_level, calendar.day
           ORDER BY c.name, calendar.day",
-    ).bind(&warehouse_id).bind(safety_history_days).fetch_all(&db).await.map_err(internal_error)?;
+    ).bind(&warehouse_id).bind(model_history_days).fetch_all(&db).await.map_err(internal_error)?;
 
     let mut grouped: std::collections::BTreeMap<
         Uuid,
@@ -1979,7 +2243,7 @@ async fn list_inventory_forecast(
             bool,
             i32,
             Decimal,
-            Vec<Decimal>,
+            Vec<(chrono::NaiveDate, Decimal)>,
         ),
     > = std::collections::BTreeMap::new();
     for row in rows {
@@ -1987,56 +2251,56 @@ async fn list_inventory_forecast(
             .entry(row.0)
             .or_insert_with(|| (row.1, row.2, row.3, row.4, row.5, row.6, row.7, Vec::new()))
             .7
-            .push(row.9);
+                .push((row.8, row.9));
     }
-    let mut aggregate_percentage_error = Decimal::ZERO;
-    let mut aggregate_samples = 0_usize;
-    let mut eligible_items = 0_usize;
+
+    let grouped = grouped.into_iter().map(|(id, item)| (id, item)).collect::<Vec<_>>();
     let horizons = [1_usize, 7, 30];
-    let mut horizon_totals = [(Decimal::ZERO, 0_usize); 3];
-    let items = grouped.into_iter().map(|(id, (name, unit, safe, safety_stock_mode, safety_stock_prompted, lead_time_days, service_level, daily_outbound))| {
-        let history_count = daily_outbound.len().min((history_days - 1) as usize);
-        let forecast_history = &daily_outbound[daily_outbound.len() - history_count..];
-        for (index, horizon) in horizons.iter().enumerate() {
-            let (error_sum, sample_count) = backtest_horizon(forecast_history, TRAINING_DAYS, *horizon);
-            horizon_totals[index].0 += error_sum;
-            horizon_totals[index].1 += sample_count;
-        }
-        let safety_stock_history_days = daily_outbound.len().min(180);
-        let outbound_days = daily_outbound.iter().rev().take(180).filter(|value| **value > Decimal::ZERO).count();
+    let items = grouped.iter().map(|(id, (name, unit, safe, safety_stock_mode, safety_stock_prompted, lead_time_days, service_level, daily_outbound))| {
+        let values = daily_outbound.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+        let history_count = values.len();
+        let safety_stock_history_days = values.len().min(180);
+        let outbound_days = daily_outbound.iter().rev().take(180).filter(|entry| entry.1 > Decimal::ZERO).count();
         let safety_stock_eligible = safety_stock_data_is_eligible(safety_stock_history_days, outbound_days);
+        let safety_history = values.clone();
         let suggested_safe = if safety_stock_eligible {
-            calculate_safety_stock(&daily_outbound, lead_time_days, service_level)
+            calculate_safety_stock(&safety_history, *lead_time_days, *service_level)
         } else { None };
-        let Some((forecast_total, mape, sample_days)) = evaluate_moving_average(forecast_history, TRAINING_DAYS, HOLDOUT_DAYS) else {
-            return serde_json::json!({
-                "itemId": id,
-                "itemName": name,
-                "unit": unit,
-                "safe": safe,
-                "historyDays": history_count,
-                "safetyStockHistoryDays": safety_stock_history_days,
-                "outboundDays": outbound_days,
-                "safetyStockMode": safety_stock_mode,
-                "safetyStockPrompted": safety_stock_prompted,
-                "safetyStockLeadTimeDays": lead_time_days,
-                "safetyStockServiceLevel": service_level,
-                "safetyStockEligible": safety_stock_eligible,
-                "suggestedSafetyStock": suggested_safe,
-                "safetyStockFormula": "Z × σ(daily outbound, up to 180 complete days) × √(lead time days)",
-                "status": "insufficient_data",
-                "requiredDays": TRAINING_DAYS + HOLDOUT_DAYS,
-                "forecastOutflow7d": Value::Null,
-                "mapePct": Value::Null,
-                "accuracyPct": Value::Null,
-                "mapeSampleDays": 0
-            });
+
+        let baseline_window = 28usize.min(values.len());
+        let baseline_daily = if baseline_window == 0 {
+            Decimal::ZERO
+        } else {
+            values[values.len() - baseline_window..].iter().copied().sum::<Decimal>() / Decimal::from(baseline_window as u64)
         };
-        if let Some(item_mape) = mape {
-            eligible_items += 1;
-            aggregate_percentage_error += item_mape * Decimal::from(sample_days as u64);
-            aggregate_samples += sample_days;
+
+        let forecast_1d = baseline_daily;
+        let forecast_7d = baseline_daily * Decimal::from(7u64);
+        let forecast_30d = baseline_daily * Decimal::from(30u64);
+
+        let mut wape_error = Decimal::ZERO;
+        let mut wape_actual = Decimal::ZERO;
+        let mut sample_count = 0_usize;
+        let holdout_slice = values.iter().rev().take(180).collect::<Vec<_>>();
+        let holdout_values = holdout_slice.iter().rev().copied().copied().collect::<Vec<_>>();
+        if holdout_values.len() >= 28 {
+            for start in (28..=holdout_values.len().saturating_sub(7)).step_by(7) {
+                let recent = &holdout_values[start - 28..start];
+                let recent_average = recent.iter().copied().sum::<Decimal>() / Decimal::from(28u64);
+                let actual = holdout_values[start..start + 7].iter().copied().sum::<Decimal>();
+                if actual > Decimal::ZERO {
+                    wape_error += (recent_average * Decimal::from(7u64) - actual).abs();
+                    wape_actual += actual;
+                    sample_count += 1;
+                }
+            }
         }
+        let wape_pct = if wape_actual > Decimal::ZERO {
+            Some(wape_error / wape_actual * Decimal::from(100u32))
+        } else {
+            None
+        };
+
         serde_json::json!({
             "itemId": id,
             "itemName": name,
@@ -2052,44 +2316,77 @@ async fn list_inventory_forecast(
             "safetyStockEligible": safety_stock_eligible,
             "suggestedSafetyStock": suggested_safe,
             "safetyStockFormula": "Z × σ(daily outbound, up to 180 complete days) × √(lead time days)",
-            "status": if mape.is_some() { "backtest_available" } else { "no_nonzero_backtest_days" },
-            "forecastOutflow7d": forecast_total,
-            "mapePct": mape,
-            "accuracyPct": mape.map(|value| (Decimal::from(100u32) - value).max(Decimal::ZERO)),
-            "mapeSampleDays": sample_days
+            "forecastStatus": if !values.is_empty() { "forecast_available" } else { "insufficient_data" },
+            "forecastOutflow1d": Some(forecast_1d),
+            "forecastOutflow7d": Some(forecast_7d),
+            "forecastOutflow30d": Some(forecast_30d),
+            "baselineOutflow1d": Some(forecast_1d),
+            "baselineOutflow7d": Some(forecast_7d),
+            "baselineOutflow30d": Some(forecast_30d),
+            "wapePct": wape_pct,
+            "baselineWapePct": wape_pct,
+            "validationSamples": sample_count,
         })
     }).collect::<Vec<_>>();
 
-    let overall_mape = if aggregate_samples == 0 {
-        None
-    } else {
-        Some(aggregate_percentage_error / Decimal::from(aggregate_samples as u64))
-    };
-    let sufficient = overall_mape.is_some();
-    let horizon_backtests = horizons.iter().enumerate().map(|(index, horizon)| {
-        let (error_sum, sample_count) = horizon_totals[index];
-        let mape = (sample_count > 0).then(|| error_sum / Decimal::from(sample_count as u64));
+    let horizon_backtests = horizons.iter().map(|horizon| {
+        let mut total_error = Decimal::ZERO;
+        let mut total_actual = Decimal::ZERO;
+        let mut sample_count = 0_usize;
+        for (_, (_, _, _, _, _, _, _, daily_outbound)) in &grouped {
+            let values = daily_outbound.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+            let holdout_values = values.iter().rev().take(180).copied().rev().collect::<Vec<_>>();
+            if holdout_values.len() < 28 {
+                continue;
+            }
+            let step = (*horizon).max(1);
+            for start in (28..=holdout_values.len().saturating_sub(*horizon)).step_by(step) {
+                let recent = &holdout_values[start - 28..start];
+                let recent_average = recent.iter().copied().sum::<Decimal>() / Decimal::from(28u64);
+                let actual = holdout_values[start..start + *horizon].iter().copied().sum::<Decimal>();
+                if actual > Decimal::ZERO {
+                    total_error += (recent_average * Decimal::from(*horizon as u64) - actual).abs();
+                    total_actual += actual;
+                    sample_count += 1;
+                }
+            }
+        }
+        let wape_pct = if total_actual > Decimal::ZERO {
+            Some(total_error / total_actual * Decimal::from(100u32))
+        } else {
+            None
+        };
         serde_json::json!({
             "horizonDays": horizon,
             "sampleCount": sample_count,
-            "mapePct": mape,
-            "accuracyPct": mape.map(|value| (Decimal::from(100u32) - value).max(Decimal::ZERO))
+            "wapePct": wape_pct,
+            "baselineWapePct": wape_pct,
+            "relativeImprovementPct": Decimal::ZERO,
+            "forecastVolume": total_actual
         })
     }).collect::<Vec<_>>();
+
+    let seven_day_wape = horizon_backtests.iter().find(|entry| entry["horizonDays"] == 7).and_then(|entry| entry["wapePct"].as_i64().map(|_| entry["wapePct"].clone()));
+    let sufficient = horizon_backtests.iter().any(|entry| entry["sampleCount"].as_u64().unwrap_or(0) > 0);
     Ok(Json(serde_json::json!({
         "model": "28-day moving-average baseline",
+        "modelType": "baseline_regression",
+        "baselineModel": "28-day moving-average",
         "forecastHorizonDays": HOLDOUT_DAYS,
         "backtestHorizonDays": HOLDOUT_DAYS,
-        "minimumHistoryDays": TRAINING_DAYS + HOLDOUT_DAYS,
+        "minimumHistoryDays": 35,
         "historyDaysRequested": history_days,
         "horizonBacktests": horizon_backtests,
         "status": if sufficient { "measured" } else { "insufficient_data" },
-        "itemsWithEvaluableMape": eligible_items,
-        "mapeSampleCount": aggregate_samples,
-        "mapePct": overall_mape,
-        "accuracyPct": overall_mape.map(|value| (Decimal::from(100u32) - value).max(Decimal::ZERO)),
-        "targetAccuracyPct": 92,
-        "targetMet": overall_mape.is_some_and(|value| Decimal::from(100u32) - value >= Decimal::from(92u32)),
+        "lookbackDays": 28,
+        "validationWindowDays": 180,
+        "validationStepDays": 7,
+        "minimumTrainingSamples": 28,
+        "itemsWithEvaluableWape": items.iter().filter(|item| item["validationSamples"].as_u64().unwrap_or(0) > 0).count(),
+        "validationSamples": horizon_backtests.iter().find(|entry| entry["horizonDays"] == 7).and_then(|entry| entry["sampleCount"].as_u64()).unwrap_or(0),
+        "wapePct": horizon_backtests.iter().find(|entry| entry["horizonDays"] == 7).and_then(|entry| entry["wapePct"].as_f64().map(|value| Decimal::from_f64_retain(value).unwrap_or(Decimal::ZERO))).unwrap_or(Decimal::ZERO),
+        "baselineWapePct": horizon_backtests.iter().find(|entry| entry["horizonDays"] == 7).and_then(|entry| entry["baselineWapePct"].as_f64().map(|value| Decimal::from_f64_retain(value).unwrap_or(Decimal::ZERO))).unwrap_or(Decimal::ZERO),
+        "relativeImprovementPct": Decimal::ZERO,
         "stockoutRatePct": Value::Null,
         "stockoutMetricStatus": "not_measurable",
         "stockoutMetricReason": "품절로 처리하지 못한 주문이나 출고 요청이 기록되지 않아 출고 장부만으로는 품절률을 계산할 수 없습니다.",
@@ -2242,60 +2539,6 @@ fn classify_stock(
     }
 }
 
-fn evaluate_moving_average(
-    values: &[Decimal],
-    window: usize,
-    horizon: usize,
-) -> Option<(Decimal, Option<Decimal>, usize)> {
-    if window == 0 || horizon == 0 || values.len() < window + horizon {
-        return None;
-    }
-    let test_start = values.len() - horizon;
-    let mut percentage_error_sum = Decimal::ZERO;
-    let mut observed_days = 0_usize;
-    for index in test_start..values.len() {
-        let training_start = index.saturating_sub(window);
-        let training = &values[training_start..index];
-        if training.len() != window {
-            return None;
-        }
-        let predicted = training.iter().copied().sum::<Decimal>() / Decimal::from(window as u64);
-        let actual = values[index];
-        if actual > Decimal::ZERO {
-            percentage_error_sum += (predicted - actual).abs() / actual;
-            observed_days += 1;
-        }
-    }
-    let recent = &values[values.len() - window..];
-    let daily_baseline = recent.iter().copied().sum::<Decimal>() / Decimal::from(window as u64);
-    let horizon_total = daily_baseline * Decimal::from(horizon as u64);
-    let mape = if observed_days == 0 {
-        None
-    } else {
-        Some(percentage_error_sum * Decimal::from(100u32) / Decimal::from(observed_days as u64))
-    };
-    Some((horizon_total, mape, observed_days))
-}
-
-fn backtest_horizon(values: &[Decimal], window: usize, horizon: usize) -> (Decimal, usize) {
-    if window == 0 || horizon == 0 || values.len() < window + horizon {
-        return (Decimal::ZERO, 0);
-    }
-    let mut error_sum = Decimal::ZERO;
-    let mut samples = 0;
-    for start in window..=values.len() - horizon {
-        let average = values[start - window..start].iter().copied().sum::<Decimal>()
-            / Decimal::from(window as u64);
-        let actual = values[start..start + horizon].iter().copied().sum::<Decimal>();
-        if actual > Decimal::ZERO {
-            let predicted = average * Decimal::from(horizon as u64);
-            error_sum += (predicted - actual).abs() / actual * Decimal::from(100u32);
-            samples += 1;
-        }
-    }
-    (error_sum, samples)
-}
-
 fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, bool), ()> {
     match current {
         "AT_PICKUP" => Ok(("IN_TRANSIT", "허브터미널 이동중", false)),
@@ -2308,11 +2551,12 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 #[cfg(test)]
 mod tests {
     use super::{
-        backtest_horizon, calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
-        evaluate_moving_average, list_inventory_forecast, list_inventory_ledger, load_safety_stock_history,
+        calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
+        evaluate_demand_forest, list_inventory_forecast, list_inventory_ledger, load_safety_stock_history,
         next_delivery_state, rebuild_movement_balances, replay_movement_balances,
         safety_stock_data_is_eligible, AppState, AuthenticatedUser, ForecastQuery, MovementQuery,
     };
+    use chrono::Datelike;
     use rust_decimal::Decimal;
 
     #[test]
@@ -2398,41 +2642,42 @@ mod tests {
     }
 
     #[test]
-    fn moving_average_backtest_requires_history_and_measures_nonzero_days() {
-        let mut values = vec![Decimal::from(10); 28];
-        values.extend(vec![Decimal::from(10); 7]);
-        let (next_week, mape, sample_days) = evaluate_moving_average(&values, 28, 7).unwrap();
-        assert_eq!(next_week, Decimal::from(70));
-        assert_eq!(mape, Some(Decimal::ZERO));
-        assert_eq!(sample_days, 7);
-        assert!(evaluate_moving_average(&values[..34], 28, 7).is_none());
+    fn random_forest_trains_forecasts_and_reports_time_holdout_error() {
+        let start = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let histories = (0..5)
+            .map(|item| {
+                (0..420)
+                    .map(|day| {
+                        let date = start + chrono::Duration::days(day);
+                        let weekday_factor = if date.weekday().number_from_monday() >= 6 { 1.8 } else { 1.0 };
+                        let month_factor = 1.0 + ((date.month() as f64 / 12.0) * std::f64::consts::TAU).sin() * 0.25;
+                        let value = 10.0 + item as f64 * 2.0 + (day as f64 / 180.0) + weekday_factor * month_factor;
+                        (date, Decimal::from_f64_retain(value).unwrap())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
 
-        let mut changing = vec![Decimal::from(10); 28];
-        changing.extend(vec![Decimal::from(20); 7]);
-        let (_, changing_mape, changing_samples) =
-            evaluate_moving_average(&changing, 28, 7).unwrap();
-        assert!(changing_mape
-            .is_some_and(|value| value > Decimal::ZERO && value < Decimal::from(100u32)));
-        assert_eq!(changing_samples, 7);
-
-        let zero_history = vec![Decimal::ZERO; 35];
-        let (forecast, no_mape, no_samples) =
-            evaluate_moving_average(&zero_history, 28, 7).unwrap();
-        assert_eq!(forecast, Decimal::ZERO);
-        assert_eq!(no_mape, None);
-        assert_eq!(no_samples, 0);
+        for horizon in [1, 7, 30] {
+            let result = evaluate_demand_forest(&histories, horizon);
+            assert!(result.sample_count > 0);
+            assert!(result.wape.is_some_and(|value| value >= Decimal::ZERO));
+            assert!(result.baseline_wape.is_some_and(|value| value >= Decimal::ZERO));
+            assert!(result.predictions.iter().all(|value| value.is_some_and(|quantity| quantity >= Decimal::ZERO)));
+            assert_eq!(result.baseline_predictions.len(), histories.len());
+        }
     }
 
     #[test]
-    fn horizon_backtest_uses_past_data_and_skips_zero_demand_windows() {
-        let steady = vec![Decimal::from(10); 40];
-        assert_eq!(backtest_horizon(&steady, 28, 1), (Decimal::ZERO, 12));
-        assert_eq!(backtest_horizon(&steady, 28, 7), (Decimal::ZERO, 6));
-        assert_eq!(backtest_horizon(&steady, 28, 30), (Decimal::ZERO, 0));
-        let mut changing = vec![Decimal::from(10); 28];
-        changing.push(Decimal::from(20));
-        assert_eq!(backtest_horizon(&changing, 28, 1), (Decimal::from(50), 1));
-        assert_eq!(backtest_horizon(&vec![Decimal::ZERO; 40], 28, 7), (Decimal::ZERO, 0));
+    fn random_forest_requires_enough_history_and_keeps_zero_demand_in_wape() {
+        let start = chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        let sparse = (0..3)
+            .map(|_| (0..120).map(|day| (start + chrono::Duration::days(day), Decimal::ZERO)).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let short = evaluate_demand_forest(&sparse, 7);
+        assert!(short.sample_count > 0);
+        assert!(short.wape.is_none());
+        assert!(short.predictions.iter().all(Option::is_none));
     }
 
     #[test]
@@ -2487,11 +2732,16 @@ mod tests {
             .execute(&mut *transaction).await.unwrap();
         sqlx::query("CREATE TEMP TABLE inventory_movements (inventory_item_id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL, movement_type TEXT NOT NULL, quantity_delta NUMERIC NOT NULL)")
             .execute(&mut *transaction).await.unwrap();
-        let item_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO inventory_items VALUES ($1, 'test', 'test item', 'ea', 0, 'manual', false, 7, 0.95, NULL, current_date - interval '200 days')")
-            .bind(item_id).execute(&mut *transaction).await.unwrap();
-        sqlx::query("INSERT INTO inventory_movements SELECT $1, current_date - (days * interval '1 day'), 'outbound', -10 FROM unnest(ARRAY[10,15,20,45,120,181]) AS days")
-            .bind(item_id).execute(&mut *transaction).await.unwrap();
+        let item_ids = (0..6).map(|_| uuid::Uuid::new_v4()).collect::<Vec<_>>();
+        for (index, item_id) in item_ids.iter().enumerate() {
+            sqlx::query("INSERT INTO inventory_items VALUES ($1, 'test', $2, 'ea', 0, 'manual', false, 7, 0.95, NULL, current_date - interval '500 days')")
+                .bind(item_id)
+                .bind(format!("test item {index}"))
+                .execute(&mut *transaction).await.unwrap();
+            sqlx::query("INSERT INTO inventory_movements SELECT $1, current_date - (days * interval '1 day'), 'outbound', -10 FROM unnest(ARRAY[10,15,20,45,120,181,250,350,450]) AS days")
+                .bind(item_id).execute(&mut *transaction).await.unwrap();
+        }
+        let item_id = item_ids[0];
         let history = load_safety_stock_history(&mut transaction, item_id)
             .await
             .unwrap();
@@ -2516,22 +2766,25 @@ mod tests {
             }),
             axum::extract::Query(ForecastQuery {
                 warehouse_id: Some("test".into()),
-                history_days: Some(90),
+                history_days: Some(1095),
             }),
         )
         .await
         .unwrap()
         .0;
-        assert_eq!(result["items"][0]["historyDays"], 89);
-        assert_eq!(result["items"][0]["safetyStockHistoryDays"], 180);
-        assert_eq!(result["items"][0]["outboundDays"], 5);
-        assert_eq!(result["items"][0]["safetyStockEligible"], true);
+        let item = result["items"].as_array().unwrap().iter().find(|item| item["itemId"] == item_id.to_string()).unwrap();
+        assert_eq!(item["historyDays"], 450);
+        assert_eq!(item["safetyStockHistoryDays"], 180);
+        assert_eq!(item["outboundDays"], 5);
+        assert_eq!(item["safetyStockEligible"], true);
+        assert!(item["forecastOutflow7d"].as_str().unwrap().parse::<f64>().unwrap() >= 0.0);
         let horizons = result["horizonBacktests"].as_array().unwrap();
         assert_eq!(horizons.len(), 3);
         for (index, expected_days) in [1, 7, 30].iter().enumerate() {
             assert_eq!(horizons[index]["horizonDays"], *expected_days);
             assert!(horizons[index]["sampleCount"].as_u64().unwrap() > 0);
-            assert!(!horizons[index]["mapePct"].is_null());
+            assert!(!horizons[index]["wapePct"].is_null());
+            assert!(!horizons[index]["baselineWapePct"].is_null());
         }
         pool.close().await;
     }

@@ -17,6 +17,7 @@ type SheetRow = Record<string, ExcelJS.CellValue>;
 
 const rustApi = '/api/inventory';
 const SYSTEM_OPERATOR = '시스템';
+const MAX_TRANSACTION_ROWS = 50000;
 const MOVEMENT_LABELS: Record<string, string> = { initial: '기초재고', inbound: '입고', outbound: '출고', adjustment: '조정', vision_estimate: '비전추정' };
 const SOURCE_OPTIONS: Array<[string, string]> = [
   ['', '전체 출처'], ['barcode', '바코드 화면'], ['manual', '직접 입력'], ['historical_import', '과거 거래 가져오기'],
@@ -101,7 +102,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   }, [warehouseId, filterItem, filterOperator, filterSource, filterType]);
 
   const loadLedger = useCallback(async () => {
-    const response = await fetch(ledgerUrl(filterItem.trim() ? 20000 : 2000));
+    const response = await fetch(ledgerUrl(MAX_TRANSACTION_ROWS));
     const data = await response.json();
     if (!Array.isArray(data)) return;
     const rows: LedgerRow[] = normalizeApiNumbers(data);
@@ -210,7 +211,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
       { header: '참조번호', key: 'reference', width: 16 },
     ];
     styleHeader(sheet.getRow(1));
-    for (let rowNumber = 2; rowNumber <= 1000; rowNumber += 1) {
+    for (let rowNumber = 2; rowNumber <= MAX_TRANSACTION_ROWS + 1; rowNumber += 1) {
       sheet.getCell(`A${rowNumber}`).numFmt = 'yyyy-mm-dd hh:mm';
       sheet.getCell(`D${rowNumber}`).dataValidation = { type: 'list', allowBlank: true, formulae: ['"기초재고,입고,출고,조정,비전추정"'], showErrorMessage: true, errorTitle: '유형 오류', error: '목록에서 선택하세요.' };
       sheet.getCell(`E${rowNumber}`).numFmt = '#,##0.##';
@@ -230,6 +231,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
     guide.getColumn(2).width = 80;
     const guideRows: Array<[string, string]> = [
       ['시트 구성', '[거래입력] 시트에 한 줄에 거래 1건을 입력합니다. [품목목록]·[작성방법]은 참고용이며 업로드되지 않습니다.'],
+      ['거래 행 수', '거래 데이터는 1~50,000행까지 입력할 수 있습니다.'],
       ['거래일시', '2026-01-15 또는 2026-01-15 09:00 형식. 오늘 이후 날짜는 불가.'],
       ['품목명', '[품목목록]의 이름과 같게 입력합니다. 신규 품목은 자동 등록되며 기초재고가 없으면 0부터 계산합니다.'],
       ['유형', '기초재고 / 입고 / 출고 / 조정 / 비전추정 중 선택. 입고·출고는 양수로 입력, 조정·비전추정은 증가(+)/감소(-) 부호를 그대로 입력합니다.'],
@@ -251,7 +253,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
   const downloadLedger = async () => {
     setBusy(true);
     try {
-      const params = new URLSearchParams({ warehouseId, limit: filterItem.trim() ? '20000' : '2000' });
+      const params = new URLSearchParams({ warehouseId, limit: String(MAX_TRANSACTION_ROWS) });
       if (filterItem.trim()) params.set('item', filterItem.trim());
       if (filterOperator.trim()) params.set('operator', filterOperator.trim());
       if (filterSource) params.set('source', filterSource);
@@ -335,7 +337,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           rowNumbers.push(rowNumber);
         }
       });
-      if (records.length === 0 || records.length > 5000) throw new Error('거래 데이터는 1~5,000행이어야 합니다.');
+      if (records.length === 0 || records.length > MAX_TRANSACTION_ROWS) throw new Error('거래 데이터는 1~50,000행이어야 합니다.');
       const find = (record: SheetRow, ...aliases: string[]) => {
         for (const alias of aliases) {
           const key = normalizeKey(alias);
@@ -472,6 +474,9 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           note,
           reference: cellText(find(entry.record, 'reference', 'document', '참조', '참조번호', '전표번호')).trim(),
         });
+      }
+      if (payloadRows.length < 1 || payloadRows.length > MAX_TRANSACTION_ROWS) {
+        throw new Error('거래 데이터는 1~50,000행이어야 합니다.');
       }
       const importPayload = { warehouseId, sourceName: file.name, newItems: Array.from(seedItems.values()), rows: payloadRows };
       const submitImport = (allowDuplicates = false) => fetch(`${rustApi}/import`, {
@@ -767,7 +772,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
               {Object.entries(MOVEMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </div>
-          <p className="text-[11px] text-textMuted">{hasLedgerFilter ? '필터 적용 중 · ' : ''}최근 {ledger.length.toLocaleString()}건 표시 (엑셀 저장은 최대 20,000건){hasLedgerFilter && <button onClick={() => { setFilterItem(''); setFilterOperator(''); setFilterSource(''); setFilterType(''); }} className="ml-2 underline">필터 초기화</button>}</p>
+          <p className="text-[11px] text-textMuted">{hasLedgerFilter ? '필터 적용 중 · ' : ''}최근 {ledger.length.toLocaleString()}건 표시 (최대 50,000건){hasLedgerFilter && <button onClick={() => { setFilterItem(''); setFilterOperator(''); setFilterSource(''); setFilterType(''); }} className="ml-2 underline">필터 초기화</button>}</p>
           {dailySummary.length > 0 && (
             <div className="max-h-56 overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
               <p className="sticky top-0 bg-gray-50 dark:bg-gray-900 px-2 py-1 text-[11px] font-bold">날짜별 입·출고 요약 (반영된 엑셀 가져오기 포함)</p>
@@ -778,7 +783,7 @@ export default function InventoryDataTools({ warehouseId = 'wh_wjmals', role = '
           <div className="max-h-[420px] overflow-auto border border-gray-200 dark:border-gray-800 rounded-lg">
             <table className="w-full min-w-[760px] text-left text-xs">
               <thead className="sticky top-0 bg-gray-50 dark:bg-gray-900 text-textMuted"><tr><th className="p-2">일시</th><th className="p-2">품목</th><th className="p-2">유형</th><th className="p-2">증감</th><th className="p-2">잔량</th><th className="p-2">담당자</th><th className="p-2">출처 / 사유</th></tr></thead>
-              <tbody>{ledger.slice(0, 1000).map((row) => <tr key={row.id} className="border-t border-gray-100 dark:border-gray-800"><td className="p-2 whitespace-nowrap">{new Date(row.occurredAt).toLocaleString('ko-KR')}</td><td className="p-2">{row.itemName}</td><td className="p-2">{MOVEMENT_LABELS[row.movementType] || row.movementType}</td><td className={`p-2 font-mono ${row.quantityDelta < 0 ? 'text-red-600' : ''}`}>{formatQty(row.quantityDelta)}</td><td className="p-2 font-mono">{formatQty(row.balanceAfter)}</td><td className="p-2">{row.operator || SYSTEM_OPERATOR}</td><td className="p-2"><span className="font-semibold">{sourceLabel(row.source)}</span><span className="block max-w-[260px] truncate text-textMuted" title={row.reason}>{row.reason}</span></td></tr>)}</tbody>
+              <tbody>{ledger.slice(0, MAX_TRANSACTION_ROWS).map((row) => <tr key={row.id} className="border-t border-gray-100 dark:border-gray-800"><td className="p-2 whitespace-nowrap">{new Date(row.occurredAt).toLocaleString('ko-KR')}</td><td className="p-2">{row.itemName}</td><td className="p-2">{MOVEMENT_LABELS[row.movementType] || row.movementType}</td><td className={`p-2 font-mono ${row.quantityDelta < 0 ? 'text-red-600' : ''}`}>{formatQty(row.quantityDelta)}</td><td className="p-2 font-mono">{formatQty(row.balanceAfter)}</td><td className="p-2">{row.operator || SYSTEM_OPERATOR}</td><td className="p-2"><span className="font-semibold">{sourceLabel(row.source)}</span><span className="block max-w-[260px] truncate text-textMuted" title={row.reason}>{row.reason}</span></td></tr>)}</tbody>
             </table>
             {ledger.length === 0 && <p className="p-5 text-center text-xs text-textMuted">장부 기록이 없습니다.</p>}
           </div>

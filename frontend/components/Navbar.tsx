@@ -6,12 +6,11 @@ import { useAuth } from '../context/AuthContext';
 import { QrCode, LogOut, Shield, Warehouse, Lock, Users } from 'lucide-react';
 import AdminUserConsole from './AdminUserConsole';
 
-const NAV_LINKS = [
+const NAV_LINKS: Array<{ href: string; label: string; icon?: boolean; live?: boolean }> = [
   { href: '/barcode', label: '바코드 스캔', icon: true },
   { href: '/delivery', label: '배송 관리' },
   { href: '/', label: '재고 현황' },
   { href: '/report', label: 'AI 리포트' },
-  { href: '/monitor', label: '실시간 모니터링', live: true },
 ];
 
 export default function Navbar() {
@@ -47,13 +46,10 @@ export default function Navbar() {
                         className={`whitespace-nowrap px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-colors ${
                           active
                             ? 'bg-primary text-white font-bold shadow-sm'
-                            : link.live
-                            ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
                             : 'hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-primary'
                         }`}
                       >
                         {link.icon && <QrCode className="w-4 h-4" />}
-                        {link.live && <span className={`w-2 h-2 rounded-full animate-pulse ${active ? 'bg-white' : 'bg-red-500'}`}></span>}
                         {link.label}
                       </a>
                     );

@@ -16,9 +16,10 @@ export type InventoryLedgerRow = {
 
 export async function fetchInventoryLedger(
   parameters: URLSearchParams,
-  options: { signal?: AbortSignal; onProgress?: (count: number) => void } = {},
+  options: { signal?: AbortSignal; onProgress?: (count: number) => void; maxRows?: number } = {},
 ): Promise<InventoryLedgerRow[]> {
-  const pageSize = 2000;
+  const maxRows = Math.max(1, Math.floor(options.maxRows ?? 50000));
+  const pageSize = Math.min(2000, maxRows);
   const params = new URLSearchParams(parameters);
   params.set('limit', String(pageSize));
   const rows: InventoryLedgerRow[] = [];
@@ -35,6 +36,7 @@ export async function fetchInventoryLedger(
     const page = normalizeApiNumbers(data) as InventoryLedgerRow[];
     rows.push(...page);
     options.onProgress?.(rows.length);
+    if (rows.length >= maxRows) return rows.slice(0, maxRows);
     if (page.length < pageSize) return rows;
     const last = page[page.length - 1];
     const cursor = `${last.occurredAt}|${last.id}`;

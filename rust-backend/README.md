@@ -50,13 +50,8 @@ GET  /api/inventory/imports
 POST /api/inventory/imports/review
 GET|POST /api/users
 GET|POST|DELETE /api/zones
-GET|POST|DELETE /api/vision
-POST /api/vision/import
-GET  /api/vision/estimates
-POST /api/vision/estimates/review
 GET|POST|PUT|DELETE /api/delivery
 POST /api/delivery/track
-GET|POST /api/monitor
 ```
 
 See `docs/API_명세서.md` for full request/response details.
@@ -69,8 +64,6 @@ See `docs/API_명세서.md` for full request/response details.
 - `JWT_SECRET`: stable random signing key; required for persistent sessions
 - `SUPER_ADMIN_PASSWORD`: required for the built-in server administrator login
 - `FRONTEND_ORIGINS`: comma-separated allowed browser origins
-- `GROQ_API_KEY`: required for `POST /api/monitor`; estimate results are queued for human review
-- `GROQ_VISION_MODEL`: model ID enabled for image input on the account; defaults to `qwen/qwen3.8-27b`
 
 Do not put database credentials in the frontend or commit `.env` files.
 
@@ -83,4 +76,4 @@ cargo check
 
 Inventory and movement Decimal values use PostgreSQL `NUMERIC(20,6)`. The API serializes Rust Decimal values as JSON decimal strings to preserve precision; clients should parse designated quantity fields before arithmetic.
 
-`GET /api/inventory/forecast` exposes a 28-day moving-average outbound baseline and a 7-day rolling-origin MAPE backtest when at least 35 completed days exist. This is a transparent baseline, not a trained AI forecast. Stockout rate remains unavailable until unmet-demand events are recorded.
+`GET /api/inventory/forecast` trains a deterministic SmartCore Random Forest regressor on up to three years of per-item daily outbound history. Its 90-day lag, rolling volume/variability, weekday, and seasonal features forecast 1, 7, and 30-day outbound totals. The most recent 180 days are held out in chronological order and compared with a 28-day moving-average baseline using WAPE. Results are returned only when the pooled training set has at least 60 examples; this is a statistical demand estimate, not a service-level guarantee. Image-analysis endpoints are disabled. Stockout rate remains unavailable until unmet-demand events are recorded.
