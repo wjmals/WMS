@@ -16,6 +16,13 @@ const decimalFields = new Set([
   'quantityDelta',
   'balanceAfter',
   'forecastOutflow7d',
+  'forecastOutflow1d',
+  'forecastOutflow30d',
+  'forecastVolume',
+  'wapePct',
+  'baselineWapePct',
+  'relativeImprovementPct',
+  'stockoutRatePct',
   'mapePct',
   'accuracyPct',
 ]);
