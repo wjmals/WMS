@@ -130,6 +130,7 @@ export default function InventoryDashboard() {
   const [movementDays, setMovementDays] = useState<MovementDay[]>([]);
   const [forecastData, setForecastData] = useState<ForecastData | null>(null);
   const [inventoryView, setInventoryView] = useState<'classic' | 'heatmap' | 'gridHeatmap'>('classic');
+  const [inventorySearch, setInventorySearch] = useState('');
   const [heatmapSearch, setHeatmapSearch] = useState('');
   const [heatmapTooltip, setHeatmapTooltip] = useState<{ item: InventoryItem; left: number; top: number } | null>(null);
   const [isDarkTheme, setIsDarkTheme] = useState(false);
@@ -482,6 +483,13 @@ export default function InventoryDashboard() {
   const shortageItems = items.filter(i => !isUnsetSafe(i) && i.status === 'shortage');
   const overstockItems = items.filter(i => !isUnsetSafe(i) && i.status === 'overstock');
   const safeItems = items.filter(i => !isUnsetSafe(i) && i.status === 'safe');
+  const inventorySearchKey = inventorySearch.trim().toLocaleLowerCase();
+  const visibleInventoryItems = items.filter((item) =>
+    !inventorySearchKey
+    || item.name.toLocaleLowerCase().includes(inventorySearchKey)
+    || item.id.toLocaleLowerCase().includes(inventorySearchKey)
+    || item.barcode?.toLocaleLowerCase().includes(inventorySearchKey)
+  );
   const heatmapSearchKey = heatmapSearch.trim().toLocaleLowerCase();
   const gridHeatmapItems = items.filter((item) =>
     !heatmapSearchKey
@@ -748,6 +756,19 @@ export default function InventoryDashboard() {
           </div>
         </div>
 
+        {items.length > 0 && inventoryView !== 'gridHeatmap' && (
+          <label className="relative block w-full max-w-sm">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-textMuted" />
+            <input
+              value={inventorySearch}
+              onChange={(event) => setInventorySearch(event.target.value)}
+              placeholder="품목명, 코드, 바코드 검색"
+              aria-label="재고 품목 검색"
+              className="w-full rounded-md border border-gray-200 bg-white py-2 pl-9 pr-3 text-xs dark:border-gray-700 dark:bg-gray-900"
+            />
+          </label>
+        )}
+
         {items.length === 0 ? (
           <div className="p-8 text-center bg-gray-50 dark:bg-gray-800/40 rounded-xl space-y-2">
             <p className="text-xs text-textMuted">등록된 재고 품목이 없습니다. 창고 관리자 권한 계정으로 로그인 후 수기로 등록할 수 있습니다.</p>
@@ -868,7 +889,7 @@ export default function InventoryDashboard() {
           </div>
         ) : inventoryView === 'heatmap' ? (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {items.map((item) => {
+            {visibleInventoryItems.length ? visibleInventoryItems.map((item) => {
               const ratio = item.safe > 0 ? Math.min(1, (item.current || 0) / item.safe) : 0;
               const heatClass = getHeatmapCardClasses(item);
               return (
@@ -919,11 +940,13 @@ export default function InventoryDashboard() {
                   </div>
                 </div>
               );
-            })}
+            }) : <p className="col-span-full p-8 text-center text-xs text-textMuted">검색 결과가 없습니다.</p>}
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            {visibleInventoryItems.length === 0 ? (
+              <p className="p-8 text-center text-xs text-textMuted">검색 결과가 없습니다.</p>
+            ) : <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-800 text-textMuted uppercase font-bold">
                   <th className="py-2.5 px-3">품목명</th>
@@ -935,7 +958,7 @@ export default function InventoryDashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800 font-semibold">
-                {items.map((item) => (
+                {visibleInventoryItems.map((item) => (
                   <tr key={item.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-800/50">
                     <td className="py-3 px-3 font-bold text-gray-900 dark:text-white">
                       📦 {item.name}
@@ -974,7 +997,7 @@ export default function InventoryDashboard() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table>}
           </div>
         )}
       </section>
