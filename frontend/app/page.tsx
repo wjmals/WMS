@@ -131,6 +131,7 @@ export default function InventoryDashboard() {
   const [forecastData, setForecastData] = useState<ForecastData | null>(null);
   const [inventoryView, setInventoryView] = useState<'classic' | 'heatmap' | 'gridHeatmap'>('classic');
   const [heatmapSearch, setHeatmapSearch] = useState('');
+  const [heatmapTooltip, setHeatmapTooltip] = useState<{ item: InventoryItem; left: number; top: number } | null>(null);
   const [isDarkTheme, setIsDarkTheme] = useState(false);
   const [loading, setLoading] = useState(true);
   const safetyPromptRunningRef = useRef(false);
@@ -552,6 +553,17 @@ export default function InventoryDashboard() {
     return { label: '안전재고 200% 이상', className: 'bg-blue-900 text-white' };
   };
 
+  const showGridHeatmapTooltip = (item: InventoryItem, target: HTMLElement) => {
+    const rect = target.getBoundingClientRect();
+    const tooltipWidth = 272;
+    const tooltipHeight = 156;
+    const left = rect.right + tooltipWidth + 12 <= window.innerWidth
+      ? rect.right + 12
+      : Math.max(12, rect.left - tooltipWidth - 12);
+    const top = Math.max(12, Math.min(rect.top, window.innerHeight - tooltipHeight - 12));
+    setHeatmapTooltip({ item, left, top });
+  };
+
   // 구역 설정 저장
   const handleSaveZone = async () => {
     if (!editingZone) return;
@@ -712,7 +724,7 @@ export default function InventoryDashboard() {
                 <button
                   key={mode}
                   type="button"
-                  onClick={() => setInventoryView(mode)}
+                  onClick={() => { setInventoryView(mode); setHeatmapTooltip(null); }}
                   className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition-all ${
                     inventoryView === mode
                       ? 'bg-white text-primary shadow-sm dark:bg-gray-900 dark:text-emerald-300'
@@ -748,7 +760,7 @@ export default function InventoryDashboard() {
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-textMuted" />
                   <input
                     value={heatmapSearch}
-                    onChange={(event) => setHeatmapSearch(event.target.value)}
+                    onChange={(event) => { setHeatmapSearch(event.target.value); setHeatmapTooltip(null); }}
                     placeholder="품목코드, 이름, 바코드 검색"
                     aria-label="히트맵 품목 검색"
                     className="w-full rounded-md border border-gray-200 bg-white py-2 pl-9 pr-3 text-xs dark:border-gray-700 dark:bg-gray-900"
@@ -778,8 +790,13 @@ export default function InventoryDashboard() {
                       return (
                         <div
                           key={item.id}
-                          title={`${item.name} · 현재 ${formatQty(item.current)} ${item.unit} · 안전재고 ${formatQty(item.safe)} ${item.unit} · ${band.label}`}
+                          role="img"
+                          tabIndex={0}
                           aria-label={`${item.name}, 현재 ${formatQty(item.current)} ${item.unit}, 안전재고 ${formatQty(item.safe)} ${item.unit}, ${band.label}`}
+                          onMouseEnter={(event) => showGridHeatmapTooltip(item, event.currentTarget)}
+                          onMouseLeave={() => setHeatmapTooltip(null)}
+                          onFocus={(event) => showGridHeatmapTooltip(item, event.currentTarget)}
+                          onBlur={() => setHeatmapTooltip(null)}
                           className={`aspect-square min-w-0 rounded-sm border border-white/60 transition-transform hover:z-10 hover:scale-110 hover:ring-2 hover:ring-primary dark:border-black/20 ${band.className}`}
                         >
                           <span className="sr-only">{coverage}</span>
@@ -816,6 +833,38 @@ export default function InventoryDashboard() {
                 )}
               </div>
             </aside>
+            {heatmapTooltip && (
+              <div
+                role="tooltip"
+                className="pointer-events-none fixed z-[80] w-[272px] rounded-md border border-gray-200 bg-white p-3 text-gray-900 shadow-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                style={{ left: heatmapTooltip.left, top: heatmapTooltip.top }}
+              >
+                {(() => {
+                  const item = heatmapTooltip.item;
+                  const band = getGridHeatmapBand(item);
+                  const coverage = item.safe > 0 ? Math.round((item.current / item.safe) * 100) : null;
+                  return (
+                    <>
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="min-w-0 break-words text-sm font-bold">{item.name}</p>
+                        <span className={`shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] font-bold ${band.className}`}>{band.label}</span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <div className="rounded-sm bg-gray-50 p-2 dark:bg-gray-800">
+                          <p className="text-[10px] text-textMuted">현재 보관량</p>
+                          <p className="mt-0.5 font-mono text-sm font-bold">{formatQty(item.current)} <span className="text-[10px] font-medium">{item.unit}</span></p>
+                        </div>
+                        <div className="rounded-sm bg-gray-50 p-2 dark:bg-gray-800">
+                          <p className="text-[10px] text-textMuted">안전재고</p>
+                          <p className="mt-0.5 font-mono text-sm font-bold">{formatQty(item.safe)} <span className="text-[10px] font-medium">{item.unit}</span></p>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-[11px] text-textMuted">안전재고 대비 {coverage === null ? '기준 미설정' : `${coverage}%`}</p>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         ) : inventoryView === 'heatmap' ? (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
