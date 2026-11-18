@@ -358,6 +358,63 @@ struct ReviewMovementImport {
     note: Option<String>,
 }
 
+struct ApprovedMovementInsert {
+    warehouse_id: String,
+    item_id: Uuid,
+    item_name: String,
+    movement_type: String,
+    quantity_delta: Decimal,
+    balance_after: Decimal,
+    note: String,
+    source: String,
+    actor_id: String,
+    actor_email: String,
+    occurred_at: DateTime<Utc>,
+}
+
+async fn apply_approved_movement_changes(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    inserts: &[ApprovedMovementInsert],
+    balance_updates: &[(Uuid, Decimal)],
+) -> Result<(), sqlx::Error> {
+    const BATCH_SIZE: usize = 500;
+
+    for chunk in inserts.chunks(BATCH_SIZE) {
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) ",
+        );
+        query.push_values(chunk, |mut values, row| {
+            values
+                .push_bind(&row.warehouse_id)
+                .push_bind(row.item_id)
+                .push_bind(&row.item_name)
+                .push_bind(&row.movement_type)
+                .push_bind(row.quantity_delta)
+                .push_bind(row.balance_after)
+                .push_bind(&row.note)
+                .push_bind(&row.source)
+                .push_bind(&row.actor_id)
+                .push_bind(&row.actor_email)
+                .push_bind(row.occurred_at);
+        });
+        query.build().execute(&mut **transaction).await?;
+    }
+
+    for chunk in balance_updates.chunks(BATCH_SIZE) {
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "UPDATE inventory_movements AS movement SET balance_after=updated.balance_after FROM ",
+        );
+        query.push("(");
+        query.push_values(chunk, |mut values, (id, balance)| {
+            values.push_bind(id).push_bind(balance);
+        });
+        query.push(") AS updated(id,balance_after) WHERE movement.id=updated.id");
+        query.build().execute(&mut **transaction).await?;
+    }
+
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct VisionEstimateQuery {
     #[serde(alias = "warehouseId")]
@@ -1781,6 +1838,8 @@ async fn review_movement_import(
             "관리자 반려"
         });
     if input.approve {
+        let mut approved_movements = Vec::new();
+        let mut balance_updates = Vec::new();
         let pending_items = sqlx::query_as::<_, (Uuid, String, Decimal, Decimal, String)>("SELECT id,name,current,safe,unit FROM inventory_items WHERE pending_batch_id=$1 FOR UPDATE")
             .bind(input.id).fetch_all(&mut *transaction).await.map_err(internal_error)?;
         for (item_id, item_name, current, safe, unit) in pending_items {
@@ -1900,17 +1959,30 @@ async fn review_movement_import(
                     before_timeline.into_iter().zip(before_balances)
                 {
                     if let Some(existing_id) = existing_id {
-                        sqlx::query("UPDATE inventory_movements SET balance_after=$1 WHERE id=$2")
-                            .bind(balance)
-                            .bind(existing_id)
-                            .execute(&mut *transaction)
-                            .await
-                            .map_err(internal_error)?;
+                        balance_updates.push((existing_id, balance));
                     } else {
                         let row = &item_rows[index];
-                        sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-                            .bind(&batch.0).bind(item_id).bind(&row.0).bind(&row.2).bind(row.3).bind(balance).bind(format!("{}{}",row.4,if row.5.is_empty(){String::new()}else{format!(" (참조: {})",row.5)})).bind(format!("historical_import:{}",input.id)).bind(&user.id).bind(&user.email).bind(row.1)
-                            .execute(&mut *transaction).await.map_err(internal_error)?;
+                        approved_movements.push(ApprovedMovementInsert {
+                            warehouse_id: batch.0.clone(),
+                            item_id,
+                            item_name: row.0.clone(),
+                            movement_type: row.2.clone(),
+                            quantity_delta: row.3,
+                            balance_after: balance,
+                            note: format!(
+                                "{}{}",
+                                row.4,
+                                if row.5.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" (참조: {})", row.5)
+                                }
+                            ),
+                            source: format!("historical_import:{}", input.id),
+                            actor_id: user.id.clone(),
+                            actor_email: user.email.clone(),
+                            occurred_at: row.1,
+                        });
                     }
                 }
 
@@ -1952,17 +2024,30 @@ async fn review_movement_import(
                     after_timeline.into_iter().zip(after_balances)
                 {
                     if let Some(existing_id) = existing_id {
-                        sqlx::query("UPDATE inventory_movements SET balance_after=$1 WHERE id=$2")
-                            .bind(balance)
-                            .bind(existing_id)
-                            .execute(&mut *transaction)
-                            .await
-                            .map_err(internal_error)?;
+                        balance_updates.push((existing_id, balance));
                     } else {
                         let row = &item_rows[index];
-                        sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-                            .bind(&batch.0).bind(item_id).bind(&row.0).bind(&row.2).bind(row.3).bind(balance).bind(format!("{}{}",row.4,if row.5.is_empty(){String::new()}else{format!(" (참조: {})",row.5)})).bind(format!("historical_import:{}",input.id)).bind(&user.id).bind(&user.email).bind(row.1)
-                            .execute(&mut *transaction).await.map_err(internal_error)?;
+                        approved_movements.push(ApprovedMovementInsert {
+                            warehouse_id: batch.0.clone(),
+                            item_id,
+                            item_name: row.0.clone(),
+                            movement_type: row.2.clone(),
+                            quantity_delta: row.3,
+                            balance_after: balance,
+                            note: format!(
+                                "{}{}",
+                                row.4,
+                                if row.5.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" (참조: {})", row.5)
+                                }
+                            ),
+                            source: format!("historical_import:{}", input.id),
+                            actor_id: user.id.clone(),
+                            actor_email: user.email.clone(),
+                            occurred_at: row.1,
+                        });
                     }
                 }
                 if let Some((archive_id, _, _, _)) = archive {
@@ -2026,17 +2111,30 @@ async fn review_movement_import(
                     ));
                 }
                 if let Some(existing_id) = existing_id {
-                    sqlx::query("UPDATE inventory_movements SET balance_after=$1 WHERE id=$2")
-                        .bind(balance)
-                        .bind(existing_id)
-                        .execute(&mut *transaction)
-                        .await
-                        .map_err(internal_error)?;
+                    balance_updates.push((existing_id, balance));
                 } else {
                     let row = &item_rows[index];
-                    sqlx::query("INSERT INTO inventory_movements (warehouse_id,inventory_item_id,item_name,movement_type,quantity_delta,balance_after,note,source,actor_id,actor_email,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-                        .bind(&batch.0).bind(item_id).bind(&row.0).bind(&row.2).bind(row.3).bind(balance).bind(format!("{}{}",row.4,if row.5.is_empty(){String::new()}else{format!(" (참조: {})",row.5)})).bind(format!("historical_import:{}",input.id)).bind(&user.id).bind(&user.email).bind(row.1)
-                        .execute(&mut *transaction).await.map_err(internal_error)?;
+                    approved_movements.push(ApprovedMovementInsert {
+                        warehouse_id: batch.0.clone(),
+                        item_id,
+                        item_name: row.0.clone(),
+                        movement_type: row.2.clone(),
+                        quantity_delta: row.3,
+                        balance_after: balance,
+                        note: format!(
+                            "{}{}",
+                            row.4,
+                            if row.5.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (참조: {})", row.5)
+                            }
+                        ),
+                        source: format!("historical_import:{}", input.id),
+                        actor_id: user.id.clone(),
+                        actor_email: user.email.clone(),
+                        occurred_at: row.1,
+                    });
                 }
             }
             if balance != baseline.1 {
@@ -2046,6 +2144,9 @@ async fn review_movement_import(
                 ));
             }
         }
+        apply_approved_movement_changes(&mut transaction, &approved_movements, &balance_updates)
+            .await
+            .map_err(internal_error)?;
     }
     let status = if input.approve {
         "APPROVED"
@@ -2655,12 +2756,12 @@ fn next_delivery_state(current: &str) -> Result<(&'static str, &'static str, boo
 #[cfg(test)]
 mod tests {
     use super::{
-        calculate_safety_stock, calculate_zone_occupancy, classify_stock, delivery_warehouse_scope,
-        evaluate_demand_forest, list_inventory_forecast, list_inventory_ledger, load_safety_stock_history,
-        next_delivery_state, rebuild_movement_balances, replay_movement_balances,
-        safety_stock_data_is_eligible, submit_movement_import, AppState, AuthenticatedUser,
-        ForecastQuery, HistoricalMovementImport, HistoricalMovementRow, MovementQuery,
-        StatusCode,
+        apply_approved_movement_changes, calculate_safety_stock, calculate_zone_occupancy,
+        classify_stock, delivery_warehouse_scope, evaluate_demand_forest, list_inventory_forecast,
+        list_inventory_ledger, load_safety_stock_history, next_delivery_state,
+        rebuild_movement_balances, replay_movement_balances, safety_stock_data_is_eligible,
+        submit_movement_import, AppState, ApprovedMovementInsert, AuthenticatedUser, ForecastQuery,
+        HistoricalMovementImport, HistoricalMovementRow, MovementQuery, StatusCode,
     };
     use chrono::Datelike;
     use rust_decimal::Decimal;
@@ -3016,6 +3117,69 @@ mod tests {
         let imported_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inventory_movement_import_rows")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(imported_rows, 50001);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires WMS_TEST_DATABASE_URL"]
+    async fn approved_movement_changes_store_and_recalculate_large_batches() {
+        let database_url = std::env::var("WMS_TEST_DATABASE_URL").expect("WMS_TEST_DATABASE_URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE inventory_movements (id UUID PRIMARY KEY, warehouse_id TEXT, inventory_item_id UUID, item_name TEXT, movement_type TEXT, quantity_delta NUMERIC, balance_after NUMERIC, note TEXT, source TEXT, actor_id TEXT, actor_email TEXT, created_at TIMESTAMPTZ)")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        let existing_ids = sqlx::query_scalar::<_, uuid::Uuid>(
+            "INSERT INTO inventory_movements (id,balance_after) SELECT gen_random_uuid(),0 FROM generate_series(1,5261) RETURNING id",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .unwrap();
+        let occurred_at = chrono::Utc::now();
+        let inserts = (0..5261)
+            .map(|index| ApprovedMovementInsert {
+                warehouse_id: "test".into(),
+                item_id: uuid::Uuid::nil(),
+                item_name: format!("item-{index}"),
+                movement_type: "inbound".into(),
+                quantity_delta: Decimal::ONE,
+                balance_after: Decimal::ONE,
+                note: String::new(),
+                source: "historical_import:test".into(),
+                actor_id: "test-user".into(),
+                actor_email: "test@example.test".into(),
+                occurred_at,
+            })
+            .collect::<Vec<_>>();
+        let updates = existing_ids
+            .into_iter()
+            .map(|id| (id, Decimal::ONE))
+            .collect::<Vec<_>>();
+
+        apply_approved_movement_changes(&mut transaction, &inserts, &updates)
+            .await
+            .unwrap();
+
+        let inserted_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM inventory_movements WHERE source='historical_import:test'",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        let recalculated_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM inventory_movements WHERE balance_after=1",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        assert_eq!(inserted_count, 5261);
+        assert_eq!(recalculated_count, 10522);
+        transaction.rollback().await.unwrap();
         pool.close().await;
     }
 
