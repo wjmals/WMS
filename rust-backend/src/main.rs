@@ -568,9 +568,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     if let Some(pool) = &db {
-        validate_database_state(pool).await?;
         let schema_sql = include_str!("../schema.sql");
         sqlx::raw_sql(schema_sql).execute(pool).await?;
+        validate_database_state(pool).await?;
         sqlx::query("ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS barcode TEXT")
             .execute(pool)
             .await?;
