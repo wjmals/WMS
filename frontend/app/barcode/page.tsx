@@ -82,6 +82,8 @@ export default function BarcodeScannerPage() {
   const busyRef = useRef(false);
   const scanHandlerRef = useRef<(raw: string, fromCamera: boolean) => void>(() => {});
   const manualScanRef = useRef<(() => Promise<boolean>) | null>(null);
+  const scanAdjustmentQueueRef = useRef<Array<{ direction: 'inbound' | 'outbound'; target: InventoryItem }>>([]);
+  const scanAdjustmentRunningRef = useRef(false);
 
   const unitOptions = selectedItem ? getUnitOptions(selectedItem) : [];
   const activeUnit = unitOptions.find((option) => option.key === adjustUnit) || unitOptions[0];
@@ -321,6 +323,34 @@ export default function BarcodeScannerPage() {
     return partial ? { item: partial, exact: false } : null;
   };
 
+  const startScanAdjustmentQueue = () => {
+    if (scanAdjustmentRunningRef.current) return;
+    scanAdjustmentRunningRef.current = true;
+    void (async () => {
+      try {
+        while (scanAdjustmentQueueRef.current.length > 0) {
+          const next = scanAdjustmentQueueRef.current.shift();
+          if (!next) continue;
+          const updated = await handleStockAdjust(next.direction, next.target, true);
+          if (!updated) continue;
+          scanAdjustmentQueueRef.current = scanAdjustmentQueueRef.current.map((pending) =>
+            pending.target.id === updated.id
+              ? { ...pending, target: { ...pending.target, ...updated } }
+              : pending,
+          );
+        }
+      } finally {
+        scanAdjustmentRunningRef.current = false;
+        if (scanAdjustmentQueueRef.current.length > 0) startScanAdjustmentQueue();
+      }
+    })();
+  };
+
+  const enqueueScanAdjustment = (direction: 'inbound' | 'outbound', target: InventoryItem) => {
+    scanAdjustmentQueueRef.current.push({ direction, target });
+    startScanAdjustmentQueue();
+  };
+
   // 바코드/QR/품목명 검색. 정확히 일치하면 scanMode에 따라 입출고까지 자동 처리한다.
   const handleScan = (rawQuery: string, fromCamera: boolean) => {
     const query = rawQuery.replace(/[\u0000-\u001f\u007f]/g, '').trim();
@@ -337,7 +367,7 @@ export default function BarcodeScannerPage() {
     setSelectedItem(matched);
     const text = `'${matched.name}' (${matched.barcode || matched.id}) 인식 완료`;
     if (found.exact && scanMode !== 'select') {
-      void handleStockAdjust(scanMode, matched, true);
+      enqueueScanAdjustment(scanMode, matched);
     } else {
       setLastScan({ type: 'success', text });
       setUpdateMsg({ type: 'success', text: `${text}! 아래에서 입고/출고를 처리하세요.` });
@@ -362,18 +392,18 @@ export default function BarcodeScannerPage() {
     direction: 'inbound' | 'outbound',
     target: InventoryItem | null = selectedItem,
     fromScan = false,
-  ) => {
-    if (!target || busyRef.current) return;
+  ): Promise<InventoryItem | null> => {
+    if (!target || busyRef.current) return null;
     const options = getUnitOptions(target);
     const unitOption = options.find((option) => option.key === adjustUnit) || options[0];
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
       setUpdateMsg({ type: 'error', text: '변동 수량을 입력하세요. 0보다 큰 숫자여야 합니다.' });
-      return;
+      return null;
     }
     const baseQuantity = amountNumber * unitOption.multiplier;
     if (direction === 'outbound' && baseQuantity > target.current + 1e-9) {
       setUpdateMsg({ type: 'error', text: `현재 재고(${formatQty(target.current)} ${target.unit})보다 많이 출고할 수 없습니다.` });
-      return;
+      return null;
     }
     busyRef.current = true;
     try {
@@ -402,11 +432,14 @@ export default function BarcodeScannerPage() {
           setLastScan({ type: 'success', text: message });
         }
         if (direction === 'inbound') setBarcodeInput('');
+        return { ...target, ...updated };
       } else {
         setUpdateMsg({ type: 'error', text: body?.error || '재고 수량 변경 중 오류가 발생했습니다.' });
+        return null;
       }
     } catch (err) {
       setUpdateMsg({ type: 'error', text: '통신 오류가 발생했습니다.' });
+      return null;
     } finally {
       busyRef.current = false;
     }
