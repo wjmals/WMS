@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '../context/AuthContext';
-import { QrCode, LogOut, Shield, Warehouse, Lock, Users } from 'lucide-react';
+import { QrCode, LogOut, Shield, Warehouse, Lock, Users, Bell, X } from 'lucide-react';
 import AdminUserConsole from './AdminUserConsole';
 
 const NAV_LINKS: Array<{ href: string; label: string; icon?: boolean; live?: boolean }> = [
@@ -17,10 +17,71 @@ export default function Navbar() {
   const { user, logout } = useAuth();
   const pathname = usePathname() || '/';
   const [showConsole, setShowConsole] = useState(false);
+  const [pendingRequestCount, setPendingRequestCount] = useState(0);
+  const [newRequestNotice, setNewRequestNotice] = useState('');
+  const seenRequestIds = React.useRef<Set<string> | null>(null);
 
   const isSuperAdmin = user?.role === '서버 관리자';
   const isWarehouseAdmin = user?.role === '관리자' || user?.role === '총괄';
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`));
+
+  React.useEffect(() => {
+    if (!user || user.role !== '관리자') {
+      seenRequestIds.current = null;
+      setPendingRequestCount(0);
+      setNewRequestNotice('');
+      return;
+    }
+
+    let active = true;
+    let fetching = false;
+    const checkRequests = async () => {
+      if (fetching) return;
+      fetching = true;
+      try {
+        const response = await fetch(
+          `/api/users?action=list_requests&adminEmail=${encodeURIComponent(user.email)}`,
+          { cache: 'no-store' },
+        );
+        if (!response.ok) throw new Error(`가입 요청 조회 실패 (${response.status})`);
+        const data = await response.json() as {
+          pendingRequests?: Array<{ id: string; userName: string }>;
+        };
+        if (!active) return;
+        const requests = data.pendingRequests || [];
+        const requestIds = new Set(requests.map((request) => request.id));
+        setPendingRequestCount(requests.length);
+        if (seenRequestIds.current) {
+          const newlyArrived = requests.filter((request) => !seenRequestIds.current?.has(request.id));
+          if (newlyArrived.length > 0) {
+            const name = newlyArrived[0].userName;
+            setNewRequestNotice(
+              newlyArrived.length === 1
+                ? `${name}님의 창고지기 가입 신청이 도착했습니다.`
+                : `새 창고지기 가입 신청 ${newlyArrived.length}건이 도착했습니다.`,
+            );
+          }
+        }
+        seenRequestIds.current = requestIds;
+      } catch (error) {
+        console.error('창고지기 가입 알림 조회 실패:', error);
+      } finally {
+        fetching = false;
+      }
+    };
+
+    void checkRequests();
+    const intervalId = window.setInterval(() => void checkRequests(), 20_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void checkRequests();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [user]);
 
   return (
     <>
@@ -61,13 +122,35 @@ export default function Navbar() {
               <div className="lg:border-l border-gray-200 dark:border-gray-700 lg:pl-4 lg:ml-1 flex items-center gap-2 sm:gap-3 min-w-0">
                 {/* 창고 관리자 전용 소속 창고지기 승인 콘솔 버튼 */}
                 {isWarehouseAdmin && (
-                  <button
-                    onClick={() => setShowConsole(true)}
-                    className="px-3 py-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-primary border border-blue-200 dark:border-blue-900/50 hover:bg-blue-100 transition-all text-xs font-bold flex items-center gap-1.5 shadow-sm"
-                  >
-                    <Users className="w-3.5 h-3.5" />
-                    멤버 승인/관리
-                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => { setShowConsole(true); setNewRequestNotice(''); }}
+                      aria-label={pendingRequestCount ? `멤버 승인/관리, 대기 중인 가입 신청 ${pendingRequestCount}건` : '멤버 승인/관리'}
+                      className="relative px-3 py-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-primary border border-blue-200 dark:border-blue-900/50 hover:bg-blue-100 transition-all text-xs font-bold flex items-center gap-1.5 shadow-sm"
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      멤버 승인/관리
+                      {pendingRequestCount > 0 && (
+                        <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] leading-4 text-white">
+                          {pendingRequestCount}
+                        </span>
+                      )}
+                    </button>
+                    {newRequestNotice && (
+                      <div role="status" className="absolute right-0 top-full z-[60] mt-2 flex w-72 items-start gap-2 rounded-xl border border-blue-200 bg-white p-3 text-xs text-gray-800 shadow-xl dark:border-blue-900 dark:bg-gray-900 dark:text-gray-100">
+                        <Bell className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+                        <button
+                          onClick={() => { setShowConsole(true); setNewRequestNotice(''); }}
+                          className="flex-1 text-left font-semibold"
+                        >
+                          {newRequestNotice} 확인하기
+                        </button>
+                        <button onClick={() => setNewRequestNotice('')} aria-label="알림 닫기" className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-xl min-w-0">
