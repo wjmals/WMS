@@ -141,8 +141,8 @@ export default function BarcodeScannerPage() {
           audio: false,
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           },
         });
         if (cancelled) {
@@ -161,35 +161,29 @@ export default function BarcodeScannerPage() {
         const canvases = [document.createElement('canvas'), document.createElement('canvas'), document.createElement('canvas')];
         let scanning = false;
         let lastEnhancedScanAt = 0;
+        const captureCanvas = (canvas: HTMLCanvasElement, cropIndex: number) => {
+          const width = video.videoWidth;
+          const height = video.videoHeight;
+          const crops = [
+            { x: 0, y: 0, width, height, scale: 1 },
+            { x: width * 0.1, y: height * 0.25, width: width * 0.8, height: height * 0.5, scale: 1.5 },
+            { x: width * 0.05, y: height * 0.15, width: width * 0.9, height: height * 0.7, scale: 1.25 },
+          ];
+          const crop = crops[cropIndex];
+          const outputScale = Math.min(crop.scale, 1600 / crop.width);
+          canvas.width = Math.max(1, Math.round(crop.width * outputScale));
+          canvas.height = Math.max(1, Math.round(crop.height * outputScale));
+          const context = canvas.getContext('2d');
+          if (!context) return false;
+          context.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
+          return true;
+        };
         const report = (rawValue: string) => {
           const value = rawValue.trim();
           const now = Date.now();
           if (!value || (lastScanRef.current.value === value && now - lastScanRef.current.at < 2500)) return;
           lastScanRef.current = { value, at: now };
           scanHandlerRef.current(value, true);
-        };
-        const drawScanCanvases = () => {
-          const width = video.videoWidth;
-          const height = video.videoHeight;
-          const [full, center, wide] = canvases;
-          full.width = width;
-          full.height = height;
-          const fullContext = full.getContext('2d');
-          if (!fullContext) return false;
-          fullContext.drawImage(video, 0, 0, width, height);
-
-          center.width = Math.round(width * 0.8 * 1.5);
-          center.height = Math.round(height * 0.5 * 1.5);
-          const centerContext = center.getContext('2d');
-          if (!centerContext) return false;
-          centerContext.drawImage(video, width * 0.1, height * 0.25, width * 0.8, height * 0.5, 0, 0, center.width, center.height);
-
-          wide.width = Math.round(width * 0.9 * 1.25);
-          wide.height = Math.round(height * 0.7 * 1.25);
-          const wideContext = wide.getContext('2d');
-          if (!wideContext) return false;
-          wideContext.drawImage(video, width * 0.05, height * 0.15, width * 0.9, height * 0.7, 0, 0, wide.width, wide.height);
-          return true;
         };
         const decodeCanvas = async (canvas: HTMLCanvasElement) => {
           if (nativeDetector) {
@@ -211,8 +205,8 @@ export default function BarcodeScannerPage() {
           scanning = true;
           setManualCaptureBusy(true);
           try {
-            if (!drawScanCanvases()) return false;
-            for (const canvas of canvases) {
+            for (const [index, canvas] of canvases.entries()) {
+              if (!captureCanvas(canvas, index)) continue;
               const value = await decodeCanvas(canvas);
               if (value) {
                 report(value);
@@ -236,16 +230,17 @@ export default function BarcodeScannerPage() {
                 return;
               }
             }
-            if (!drawScanCanvases()) return;
+            if (!captureCanvas(canvases[0], 0)) return;
             const value = await decodeCanvas(canvases[0]);
             if (value) {
               report(value);
               return;
             }
             const now = Date.now();
-            if (now - lastEnhancedScanAt >= 2000) {
+            if (now - lastEnhancedScanAt >= 500) {
               lastEnhancedScanAt = now;
-              for (const canvas of canvases.slice(1)) {
+              for (const [index, canvas] of canvases.slice(1).entries()) {
+                if (!captureCanvas(canvas, index + 1)) continue;
                 const enhancedValue = await decodeCanvas(canvas);
                 if (enhancedValue) {
                   report(enhancedValue);
@@ -259,7 +254,7 @@ export default function BarcodeScannerPage() {
             scanning = false;
           }
         };
-        scanTimerRef.current = window.setInterval(() => void scanFrame(), 300);
+        scanTimerRef.current = window.setInterval(() => void scanFrame(), 200);
       } catch (error) {
         if (cancelled) return;
         console.error('카메라를 활성화할 수 없습니다:', error);
@@ -554,6 +549,10 @@ export default function BarcodeScannerPage() {
                       바코드를 사각형 안에 맞춰주세요
                     </span>
                   </div>
+                  <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded bg-black/70 px-2 py-1 text-[10px] font-semibold text-white">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+                    영상 프레임 자동 캡처·판독 중
+                  </span>
                 </>
               ) : (
                 <div className="text-center px-4">
