@@ -498,7 +498,7 @@ export default function InventoryDashboard() {
     || item.barcode?.toLocaleLowerCase().includes(heatmapSearchKey)
   );
   const replenishmentItems = gridHeatmapItems
-    .filter((item) => item.safe > 0 && item.current < item.safe)
+    .filter((item) => item.safe > 0 && item.status === 'shortage')
     .sort((a, b) => (b.safe - b.current) / b.safe - (a.safe - a.current) / a.safe);
 
   // 구역 수정 모달 열기
@@ -553,12 +553,13 @@ export default function InventoryDashboard() {
     if (item.safe <= 0) {
       return { label: '안전재고 미설정', className: 'bg-slate-300 text-slate-800 dark:bg-slate-700 dark:text-slate-100' };
     }
-    const coverage = (item.current / item.safe) * 100;
-    if (coverage < 50) return { label: '안전재고 50% 미만', className: 'bg-amber-600 text-white' };
-    if (coverage < 100) return { label: '안전재고 미달', className: 'bg-yellow-300 text-yellow-950' };
-    if (coverage < 150) return { label: '안전재고 100-150%', className: 'bg-sky-200 text-sky-950' };
-    if (coverage < 200) return { label: '안전재고 150-200%', className: 'bg-blue-500 text-white' };
-    return { label: '안전재고 200% 이상', className: 'bg-blue-900 text-white' };
+    if (item.status === 'shortage') {
+      return { label: '재고 부족', className: 'bg-red-500 text-white' };
+    }
+    if (item.status === 'overstock') {
+      return { label: '재고 과다', className: 'bg-amber-500 text-white' };
+    }
+    return { label: '안전 재고', className: 'bg-emerald-500 text-white' };
   };
 
   const showGridHeatmapTooltip = (item: InventoryItem, target: HTMLElement) => {
@@ -790,11 +791,9 @@ export default function InventoryDashboard() {
                 <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-textMuted" aria-label="안전재고 대비 범례">
                   {[
                     ['bg-slate-300 dark:bg-slate-700', '미설정'],
-                    ['bg-amber-600', '50% 미만'],
-                    ['bg-yellow-300', '부족'],
-                    ['bg-sky-200', '100-150%'],
-                    ['bg-blue-500', '150-200%'],
-                    ['bg-blue-900', '200%+'],
+                    ['bg-red-500', '재고 부족'],
+                    ['bg-emerald-500', '안전 재고'],
+                    ['bg-amber-500', '재고 과다'],
                   ].map(([color, label]) => (
                     <span key={label} className="inline-flex items-center gap-1 whitespace-nowrap">
                       <span className={`h-3 w-3 rounded-sm ${color}`} />{label}
@@ -829,13 +828,13 @@ export default function InventoryDashboard() {
                   <p className="p-8 text-center text-xs text-textMuted">검색 결과가 없습니다.</p>
                 )}
               </div>
-              <p className="text-[11px] text-textMuted">타일에 마우스를 올리면 품목명과 현재량, 안전재고를 확인할 수 있습니다. 색상은 안전재고 대비 현재량입니다.</p>
+              <p className="text-[11px] text-textMuted">타일 색상과 상태는 재고 목록 및 요약과 같은 판정 결과입니다. 마우스를 올리면 안전재고 대비 비율도 확인할 수 있습니다.</p>
             </div>
 
             <aside className="min-w-0 overflow-hidden rounded-md border border-gray-200 dark:border-gray-800">
               <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-800">
                 <h3 className="text-sm font-bold text-textMain dark:text-white">보충 필요</h3>
-                <p className="mt-1 text-[11px] text-textMuted">{replenishmentItems.length}개 품목 · 안전재고 미달률이 큰 순서</p>
+                <p className="mt-1 text-[11px] text-textMuted">{replenishmentItems.length}개 품목 · 재고 부족 판정 품목을 안전재고 미달률 순으로 표시</p>
               </div>
               <div className="max-h-[560px] divide-y divide-gray-100 overflow-y-auto dark:divide-gray-800">
                 {replenishmentItems.length ? replenishmentItems.map((item) => {
