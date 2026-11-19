@@ -73,6 +73,7 @@ export default function BarcodeScannerPage() {
   const [loading, setLoading] = useState(true);
   const [barcodeMode, setBarcodeMode] = useBarcodeMode();
   const [barcodeDraft, setBarcodeDraft] = useState('');
+  const [manualCaptureBusy, setManualCaptureBusy] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -80,6 +81,7 @@ export default function BarcodeScannerPage() {
   const lastScanRef = useRef<{ value: string; at: number }>({ value: '', at: 0 });
   const busyRef = useRef(false);
   const scanHandlerRef = useRef<(raw: string, fromCamera: boolean) => void>(() => {});
+  const manualScanRef = useRef<(() => Promise<boolean>) | null>(null);
 
   const unitOptions = selectedItem ? getUnitOptions(selectedItem) : [];
   const activeUnit = unitOptions.find((option) => option.key === adjustUnit) || unitOptions[0];
@@ -137,7 +139,11 @@ export default function BarcodeScannerPage() {
         }
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: { facingMode: { ideal: 'environment' } },
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
         });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
@@ -152,8 +158,9 @@ export default function BarcodeScannerPage() {
         const NativeDetector = (window as unknown as { BarcodeDetector?: new (options?: { formats?: string[] }) => { detect: (source: CanvasImageSource) => Promise<Array<{ rawValue: string }>> } }).BarcodeDetector;
         const nativeDetector = NativeDetector ? new NativeDetector() : null;
         const reader = new BrowserMultiFormatReader();
-        const canvas = document.createElement('canvas');
+        const canvases = [document.createElement('canvas'), document.createElement('canvas'), document.createElement('canvas')];
         let scanning = false;
+        let lastEnhancedScanAt = 0;
         const report = (rawValue: string) => {
           const value = rawValue.trim();
           const now = Date.now();
@@ -161,20 +168,90 @@ export default function BarcodeScannerPage() {
           lastScanRef.current = { value, at: now };
           scanHandlerRef.current(value, true);
         };
+        const drawScanCanvases = () => {
+          const width = video.videoWidth;
+          const height = video.videoHeight;
+          const [full, center, wide] = canvases;
+          full.width = width;
+          full.height = height;
+          const fullContext = full.getContext('2d');
+          if (!fullContext) return false;
+          fullContext.drawImage(video, 0, 0, width, height);
+
+          center.width = Math.round(width * 0.8 * 1.5);
+          center.height = Math.round(height * 0.5 * 1.5);
+          const centerContext = center.getContext('2d');
+          if (!centerContext) return false;
+          centerContext.drawImage(video, width * 0.1, height * 0.25, width * 0.8, height * 0.5, 0, 0, center.width, center.height);
+
+          wide.width = Math.round(width * 0.9 * 1.25);
+          wide.height = Math.round(height * 0.7 * 1.25);
+          const wideContext = wide.getContext('2d');
+          if (!wideContext) return false;
+          wideContext.drawImage(video, width * 0.05, height * 0.15, width * 0.9, height * 0.7, 0, 0, wide.width, wide.height);
+          return true;
+        };
+        const decodeCanvas = async (canvas: HTMLCanvasElement) => {
+          if (nativeDetector) {
+            try {
+              const found = await nativeDetector.detect(canvas);
+              if (found[0]?.rawValue) return found[0].rawValue;
+            } catch {
+              // Some browsers support video detection but not canvas detection.
+            }
+          }
+          try {
+            return reader.decodeFromCanvas(canvas).getText();
+          } catch {
+            return null;
+          }
+        };
+        manualScanRef.current = async () => {
+          if (scanning || cancelled || video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || !video.videoWidth) return false;
+          scanning = true;
+          setManualCaptureBusy(true);
+          try {
+            if (!drawScanCanvases()) return false;
+            for (const canvas of canvases) {
+              const value = await decodeCanvas(canvas);
+              if (value) {
+                report(value);
+                return true;
+              }
+            }
+            return false;
+          } finally {
+            scanning = false;
+            if (!cancelled) setManualCaptureBusy(false);
+          }
+        };
         const scanFrame = async () => {
           if (scanning || cancelled || video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || !video.videoWidth) return;
           scanning = true;
           try {
             if (nativeDetector) {
               const found = await nativeDetector.detect(video);
-              if (found[0]?.rawValue) report(found[0].rawValue);
-            } else {
-              canvas.width = video.videoWidth;
-              canvas.height = video.videoHeight;
-              const context = canvas.getContext('2d');
-              if (!context) return;
-              context.drawImage(video, 0, 0, canvas.width, canvas.height);
-              report(reader.decodeFromCanvas(canvas).getText());
+              if (found[0]?.rawValue) {
+                report(found[0].rawValue);
+                return;
+              }
+            }
+            if (!drawScanCanvases()) return;
+            const value = await decodeCanvas(canvases[0]);
+            if (value) {
+              report(value);
+              return;
+            }
+            const now = Date.now();
+            if (now - lastEnhancedScanAt >= 2000) {
+              lastEnhancedScanAt = now;
+              for (const canvas of canvases.slice(1)) {
+                const enhancedValue = await decodeCanvas(canvas);
+                if (enhancedValue) {
+                  report(enhancedValue);
+                  break;
+                }
+              }
             }
           } catch {
             // 프레임에서 코드를 읽지 못하는 것은 카메라 이동 중 정상적인 상황입니다.
@@ -204,6 +281,7 @@ export default function BarcodeScannerPage() {
     void start();
     return () => {
       cancelled = true;
+      manualScanRef.current = null;
       stopStream();
     };
   }, [isCameraActive]);
@@ -273,6 +351,16 @@ export default function BarcodeScannerPage() {
   scanHandlerRef.current = (raw, fromCamera) => handleScan(raw, fromCamera);
 
   const handleSearch = (query: string) => handleScan(query, false);
+
+  const handleManualCameraScan = async () => {
+    const recognized = await manualScanRef.current?.();
+    if (recognized === undefined) return;
+    if (!recognized) {
+      const text = '바코드를 인식하지 못했습니다. 바코드를 사각형 안에 맞추고 초점을 맞춘 뒤 다시 촬영하세요.';
+      setLastScan({ type: 'error', text });
+      setUpdateMsg({ type: 'error', text });
+    }
+  };
 
   // Stock update (입고 / 출고)
   const handleStockAdjust = async (direction: 'inbound' | 'outbound', target: InventoryItem | null = selectedItem) => {
@@ -487,12 +575,22 @@ export default function BarcodeScannerPage() {
                   카메라 스캐너 시작
                 </button>
               ) : (
-                <button
-                  onClick={stopCamera}
-                  className="w-full py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all"
-                >
-                  카메라 정지
-                </button>
+                <div className="grid w-full grid-cols-2 gap-2">
+                  <button
+                    onClick={() => void handleManualCameraScan()}
+                    disabled={manualCaptureBusy}
+                    className="py-3 bg-primary hover:bg-blue-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-60"
+                  >
+                    <Camera className="w-4 h-4" />
+                    {manualCaptureBusy ? '촬영·판독 중...' : '한 장 촬영해 재인식'}
+                  </button>
+                  <button
+                    onClick={stopCamera}
+                    className="py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all"
+                  >
+                    카메라 정지
+                  </button>
+                </div>
               )}
             </div>
 
