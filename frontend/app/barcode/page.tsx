@@ -312,6 +312,7 @@ export default function BarcodeScannerPage() {
         const message = `[${target.name}] ${actionText} 처리 완료! (현재 재고: ${formatQty(updated.current ?? target.current)} ${target.unit})`;
         setUpdateMsg({ type: 'success', text: message });
         setLastScan({ type: 'success', text: message });
+        if (direction === 'inbound') setBarcodeInput('');
       } else {
         setUpdateMsg({ type: 'error', text: body?.error || '재고 수량 변경 중 오류가 발생했습니다.' });
       }
