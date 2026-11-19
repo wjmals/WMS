@@ -553,13 +553,13 @@ export default function InventoryDashboard() {
     if (item.safe <= 0) {
       return { label: '안전재고 미설정', className: 'bg-slate-300 text-slate-800 dark:bg-slate-700 dark:text-slate-100' };
     }
-    if (item.status === 'shortage') {
-      return { label: '재고 부족', className: 'bg-red-500 text-white' };
-    }
-    if (item.status === 'overstock') {
-      return { label: '재고 과다', className: 'bg-amber-500 text-white' };
-    }
-    return { label: '안전 재고', className: 'bg-emerald-500 text-white' };
+    const coverage = (item.current / item.safe) * 100;
+    const label = item.statusLabel;
+    if (coverage < 50) return { label, className: 'bg-amber-600 text-white' };
+    if (coverage < 100) return { label, className: 'bg-yellow-300 text-yellow-950' };
+    if (coverage < 150) return { label, className: 'bg-sky-200 text-sky-950' };
+    if (coverage < 200) return { label, className: 'bg-blue-500 text-white' };
+    return { label, className: 'bg-blue-900 text-white' };
   };
 
   const showGridHeatmapTooltip = (item: InventoryItem, target: HTMLElement) => {
@@ -788,12 +788,14 @@ export default function InventoryDashboard() {
                     className="w-full rounded-md border border-gray-200 bg-white py-2 pl-9 pr-3 text-xs dark:border-gray-700 dark:bg-gray-900"
                   />
                 </label>
-                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-textMuted" aria-label="안전재고 대비 범례">
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-textMuted" aria-label="안전재고 대비 재고 비율 범례">
                   {[
                     ['bg-slate-300 dark:bg-slate-700', '미설정'],
-                    ['bg-red-500', '재고 부족'],
-                    ['bg-emerald-500', '안전 재고'],
-                    ['bg-amber-500', '재고 과다'],
+                    ['bg-amber-600', '50% 미만'],
+                    ['bg-yellow-300', '50-100%'],
+                    ['bg-sky-200', '100-150%'],
+                    ['bg-blue-500', '150-200%'],
+                    ['bg-blue-900', '200% 이상'],
                   ].map(([color, label]) => (
                     <span key={label} className="inline-flex items-center gap-1 whitespace-nowrap">
                       <span className={`h-3 w-3 rounded-sm ${color}`} />{label}
@@ -828,7 +830,7 @@ export default function InventoryDashboard() {
                   <p className="p-8 text-center text-xs text-textMuted">검색 결과가 없습니다.</p>
                 )}
               </div>
-              <p className="text-[11px] text-textMuted">타일 색상과 상태는 재고 목록 및 요약과 같은 판정 결과입니다. 마우스를 올리면 안전재고 대비 비율도 확인할 수 있습니다.</p>
+              <p className="text-[11px] text-textMuted">타일 색상은 안전재고 대비 재고 비율을 나타내며, 상태 문구는 재고 목록 및 요약과 같은 판정 결과입니다.</p>
             </div>
 
             <aside className="min-w-0 overflow-hidden rounded-md border border-gray-200 dark:border-gray-800">
