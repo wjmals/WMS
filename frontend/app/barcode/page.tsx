@@ -336,10 +336,10 @@ export default function BarcodeScannerPage() {
     const matched = found.item;
     setSelectedItem(matched);
     const text = `'${matched.name}' (${matched.barcode || matched.id}) 인식 완료`;
-    setLastScan({ type: 'success', text });
     if (found.exact && scanMode !== 'select') {
-      void handleStockAdjust(scanMode, matched);
+      void handleStockAdjust(scanMode, matched, true);
     } else {
+      setLastScan({ type: 'success', text });
       setUpdateMsg({ type: 'success', text: `${text}! 아래에서 입고/출고를 처리하세요.` });
     }
   };
@@ -358,7 +358,11 @@ export default function BarcodeScannerPage() {
   };
 
   // Stock update (입고 / 출고)
-  const handleStockAdjust = async (direction: 'inbound' | 'outbound', target: InventoryItem | null = selectedItem) => {
+  const handleStockAdjust = async (
+    direction: 'inbound' | 'outbound',
+    target: InventoryItem | null = selectedItem,
+    fromScan = false,
+  ) => {
     if (!target || busyRef.current) return;
     const options = getUnitOptions(target);
     const unitOption = options.find((option) => option.key === adjustUnit) || options[0];
@@ -393,8 +397,10 @@ export default function BarcodeScannerPage() {
         setItems((prev) => prev.map((item) => (item.id === target.id ? { ...item, ...updated } : item)));
         const actionText = `${formatQty(amountNumber)} ${unitOption.name} ${direction === 'inbound' ? '입고' : '출고'}`;
         const message = `[${target.name}] ${actionText} 처리 완료! (현재 재고: ${formatQty(updated.current ?? target.current)} ${target.unit})`;
-        setUpdateMsg({ type: 'success', text: message });
-        setLastScan({ type: 'success', text: message });
+        if (!fromScan) {
+          setUpdateMsg({ type: 'success', text: message });
+          setLastScan({ type: 'success', text: message });
+        }
         if (direction === 'inbound') setBarcodeInput('');
       } else {
         setUpdateMsg({ type: 'error', text: body?.error || '재고 수량 변경 중 오류가 발생했습니다.' });
@@ -478,7 +484,7 @@ export default function BarcodeScannerPage() {
       </div>
 
       {/* Alert Banner */}
-      {updateMsg && (
+      {updateMsg && (updateMsg.type === 'error' || scanMode === 'select') && (
         <div
           className={`p-4 rounded-2xl border text-sm font-semibold flex items-center justify-between transition-all ${
             updateMsg.type === 'success'
@@ -615,7 +621,7 @@ export default function BarcodeScannerPage() {
                   아래 변동 수량·단위({amountNumber > 0 ? formatQty(amountNumber) : '미입력'} {activeUnit?.name || ''})만큼 인식할 때마다 자동으로 {scanMode === 'inbound' ? '입고' : '출고'}됩니다.
                 </p>
               )}
-              {lastScan && (
+              {lastScan && (lastScan.type === 'error' || scanMode === 'select') && (
                 <p className={`text-xs font-semibold break-words rounded-lg px-3 py-2 ${lastScan.type === 'success' ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-300'}`}>
                   최근 스캔: {lastScan.text}
                 </p>
