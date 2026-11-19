@@ -419,6 +419,7 @@ async fn apply_approved_movement_changes(
 struct VisionEstimateQuery {
     #[serde(alias = "warehouseId")]
     warehouse_id: Option<String>,
+    id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -563,6 +564,27 @@ struct AnalysisResult {
     confidence: i32,
     recommendation: String,
     reason: String,
+    #[serde(rename = "visualFeatures", default)]
+    visual_features: VisualFeatures,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VisualFeatures {
+    #[serde(default)]
+    objects: Vec<String>,
+    #[serde(default)]
+    colors: Vec<String>,
+    #[serde(default)]
+    shapes_and_edges: Vec<String>,
+    #[serde(default)]
+    text: Vec<String>,
+    #[serde(default)]
+    logos: Vec<String>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    quantity_basis: String,
 }
 
 async fn validate_database_state(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
@@ -696,6 +718,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .execute(pool).await?;
         sqlx::query("CREATE TABLE IF NOT EXISTS inventory_vision_estimates (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE, inventory_item_id UUID REFERENCES inventory_items(id) ON DELETE RESTRICT, item_name TEXT NOT NULL, estimated_quantity NUMERIC(20,6) NOT NULL CHECK (estimated_quantity >= 0), unit TEXT NOT NULL, confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100), recommendation TEXT NOT NULL, reason TEXT NOT NULL, image_snapshot TEXT, submitted_by TEXT NOT NULL, submitted_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')), reviewed_by TEXT, reviewed_email TEXT, reviewed_at TIMESTAMPTZ, review_note TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
             .execute(pool).await?;
+        sqlx::query("ALTER TABLE inventory_vision_estimates ADD COLUMN IF NOT EXISTS visual_features JSONB NOT NULL DEFAULT '{}'::jsonb")
+            .execute(pool).await?;
     }
 
     let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
@@ -744,6 +768,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/zones",
             get(list_zones).post(save_zone).delete(delete_zone),
         )
+        .route("/api/vision/analyze", axum::routing::post(analyze_monitor_image))
+        .route("/api/vision/estimates", get(list_vision_estimates))
+        .route("/api/vision/estimate", get(get_vision_estimate))
+        .route(
+            "/api/vision/review",
+            axum::routing::post(review_vision_estimate),
+        )
+        .route("/api/monitor", get(list_monitor_logs))
         .route(
             "/api/delivery",
             get(list_delivery)
@@ -2758,13 +2790,41 @@ mod tests {
     use super::{
         apply_approved_movement_changes, calculate_safety_stock, calculate_zone_occupancy,
         classify_stock, delivery_warehouse_scope, evaluate_demand_forest, list_inventory_forecast,
-        list_inventory_ledger, load_safety_stock_history, next_delivery_state,
+        list_inventory_ledger, load_safety_stock_history, next_delivery_state, AnalysisResult,
+        VisualFeatures,
         rebuild_movement_balances, replay_movement_balances, safety_stock_data_is_eligible,
         submit_movement_import, AppState, ApprovedMovementInsert, AuthenticatedUser, ForecastQuery,
         HistoricalMovementImport, HistoricalMovementRow, MovementQuery, StatusCode,
     };
     use chrono::Datelike;
     use rust_decimal::Decimal;
+
+    #[test]
+    fn vision_result_serializes_structured_visual_features() {
+        let result = AnalysisResult {
+            item_name: "상자".into(),
+            estimated_quantity: Decimal::ONE,
+            unit: "ea".into(),
+            status: "safe".into(),
+            status_label: "안전 재고".into(),
+            confidence: 80,
+            recommendation: "확인".into(),
+            reason: "전면 상자 1개".into(),
+            visual_features: VisualFeatures {
+                objects: vec!["상자".into()],
+                colors: vec!["갈색".into()],
+                shapes_and_edges: vec!["직육면체 모서리".into()],
+                text: vec!["A-12".into()],
+                logos: vec!["WMS".into()],
+                description: "갈색 상자".into(),
+                quantity_basis: "분리된 상자 1개 확인".into(),
+            },
+        };
+
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["visualFeatures"]["shapesAndEdges"][0], "직육면체 모서리");
+        assert_eq!(json["visualFeatures"]["quantityBasis"], "분리된 상자 1개 확인");
+    }
 
     #[test]
     fn stock_status_respects_shortage_and_overstock_boundaries() {
@@ -4273,6 +4333,35 @@ async fn analyze_monitor_image(
     Json(input): Json<MonitorInput>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let db = state.db.ok_or_else(database_not_configured)?;
+    if input.image.len() > 8_000_000 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "이미지 크기는 6MB 이하로 줄여 다시 시도하세요.".to_string(),
+        ));
+    }
+    let image = input.image.trim();
+    if image.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "분석할 이미지가 필요합니다.".to_string()));
+    }
+    let image_url = if let Some((metadata, _)) = image.split_once(',') {
+        if !metadata.starts_with("data:image/") {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "JPEG, PNG 또는 WebP 이미지 형식만 분석할 수 있습니다.".to_string(),
+            ));
+        }
+        if !["data:image/jpeg;base64", "data:image/png;base64", "data:image/webp;base64"]
+            .contains(&metadata)
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "JPEG, PNG 또는 WebP 이미지 형식만 분석할 수 있습니다.".to_string(),
+            ));
+        }
+        image.to_string()
+    } else {
+        format!("data:image/jpeg;base64,{}", image)
+    };
     let api_key = env::var("GROQ_API_KEY").map_err(|_| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -4292,11 +4381,6 @@ async fn analyze_monitor_image(
                 "계정에 배정된 창고가 없습니다.".to_string(),
             )
         })?
-    };
-    let image_url = if input.image.starts_with("data:") {
-        input.image.clone()
-    } else {
-        format!("data:image/jpeg;base64,{}", input.image)
     };
     let references = if let Some(item_name) = input.item_name.as_deref() {
         let matching = sqlx::query_as::<_, (String, String, String)>(
@@ -4337,7 +4421,7 @@ async fn analyze_monitor_image(
         "기존 재고 품목 단위 제약: 기준 단위는 '{}', 등록된 포장 단위는 '{}'. 이미지에서 수량을 판독할 수 있더라도 unit 필드에는 이 둘 중 하나만 반환하세요. 해당 단위로 신뢰성 있게 환산할 수 없으면 추정 수량을 억지로 만들지 말고 낮은 confidence와 사유를 반환하세요.",
         unit, package_unit.as_deref().unwrap_or("없음")
     )).unwrap_or_else(|| "단위는 이미지에서 확인 가능한 명확한 단위를 사용하세요.".to_string());
-    let prompt = format!("당신은 창고 재고 관리 AI입니다. 현재 이미지는 실물 재고 참고 이미지이며, 식별 가능한 사실만 분석하고 JSON만 반환하세요. 아래 레퍼런스 이미지는 이번 분석의 참고 자료일 뿐 학습이나 실측 보증이 아닙니다. 우선 품목: {}. {} 반환 필드: itemName, estimatedQuantity (0 이상 숫자), unit, status(shortage|safe|overstock), statusLabel, confidence(0-100 정수), recommendation, reason. 수량을 확신할 수 없으면 confidence를 낮추고 추정 한계를 reason에 밝히세요.", input.item_name.as_deref().unwrap_or("없음"), unit_instruction);
+    let prompt = format!("당신은 창고 실물 사진을 정형 데이터로 변환하는 비전 분석기입니다. 이미지에서 실제로 보이는 내용만 분석하고 아래 JSON 객체 하나만 반환하세요. 제공된 레퍼런스는 품목 식별 참고이며 현재 이미지의 관찰 결과와 혼합하지 마세요. 우선 품목: {}. {} JSON 필드는 itemName(품목명), estimatedQuantity(0 이상 추정 수량), unit, status(shortage|safe|overstock), statusLabel, confidence(0~100 정수), recommendation, reason, visualFeatures 객체입니다. visualFeatures에는 objects(식별한 물체/포장 종류와 보이는 개수 문자열 배열), colors(주요 색상 배열), shapesAndEdges(형태·모서리·배치 특징 배열), text(읽을 수 있는 문자·숫자·라벨 배열, 불확실하면 빈 배열), logos(식별 가능한 로고/브랜드 배열, 불확실하면 빈 배열), description(장면 설명), quantityBasis(수량 추정에 사용한 근거와 가림/중첩 등 한계)를 넣으세요. 사진만으로 수량을 신뢰성 있게 셀 수 없으면 임의로 단정하지 말고 confidence를 낮추고 quantityBasis와 reason에 한계를 적으세요. 사진 추정은 실측이 아니므로 승인 전 재고에 반영하지 마세요.", input.item_name.as_deref().unwrap_or("없음"), unit_instruction);
     let mut content = vec![serde_json::json!({ "type": "text", "text": prompt })];
     for (name, description, thumbnail) in references {
         if thumbnail.trim().is_empty() {
@@ -4418,16 +4502,16 @@ async fn analyze_monitor_image(
         ));
     }
     sqlx::query("INSERT INTO monitor_logs (warehouse_id, camera_url, item_name, status, status_label, estimated_quantity, unit, confidence, recommendation, reason, image_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-        .bind(&warehouse_id).bind(input.camera_url.unwrap_or_else(|| "webcam".to_string())).bind(&result.item_name).bind(&result.status).bind(&result.status_label).bind(result.estimated_quantity).bind(&result.unit).bind(result.confidence).bind(&result.recommendation).bind(&result.reason).bind(input.image.chars().take(1000).collect::<String>())
+        .bind(&warehouse_id).bind(input.camera_url.unwrap_or_else(|| "webcam".to_string())).bind(&result.item_name).bind(&result.status).bind(&result.status_label).bind(result.estimated_quantity).bind(&result.unit).bind(result.confidence).bind(&result.recommendation).bind(&result.reason).bind(image.chars().take(1000).collect::<String>())
         .execute(&db).await.map_err(internal_error)?;
     let item_id = sqlx::query_scalar::<_, Uuid>("SELECT id FROM inventory_items WHERE warehouse_id=$1 AND lower(name)=lower($2) AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1")
         .bind(&warehouse_id).bind(&result.item_name).fetch_optional(&db).await.map_err(internal_error)?;
     let estimate_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO inventory_vision_estimates (id,warehouse_id,inventory_item_id,item_name,estimated_quantity,unit,confidence,recommendation,reason,image_snapshot,submitted_by,submitted_email) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)")
-        .bind(estimate_id).bind(&warehouse_id).bind(item_id).bind(&result.item_name).bind(result.estimated_quantity).bind(&result.unit).bind(result.confidence).bind(&result.recommendation).bind(&result.reason).bind(input.image.chars().take(50_000).collect::<String>()).bind(&user.id).bind(&user.email)
+    sqlx::query("INSERT INTO inventory_vision_estimates (id,warehouse_id,inventory_item_id,item_name,estimated_quantity,unit,confidence,recommendation,reason,visual_features,image_snapshot,submitted_by,submitted_email) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
+        .bind(estimate_id).bind(&warehouse_id).bind(item_id).bind(&result.item_name).bind(result.estimated_quantity).bind(&result.unit).bind(result.confidence).bind(&result.recommendation).bind(&result.reason).bind(serde_json::to_value(&result.visual_features).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?).bind(image).bind(&user.id).bind(&user.email)
         .execute(&db).await.map_err(internal_error)?;
     Ok(Json(
-        serde_json::json!({ "estimateId":estimate_id,"itemName":result.item_name,"estimatedQuantity":result.estimated_quantity,"unit":result.unit,"status":result.status,"statusLabel":result.status_label,"confidence":result.confidence,"recommendation":result.recommendation,"reason":result.reason,"model":vision_model,"reviewStatus":"PENDING","savedToDb":false }),
+        serde_json::json!({ "estimateId":estimate_id,"itemName":result.item_name,"estimatedQuantity":result.estimated_quantity,"unit":result.unit,"status":result.status,"statusLabel":result.status_label,"confidence":result.confidence,"recommendation":result.recommendation,"reason":result.reason,"visualFeatures":result.visual_features,"model":vision_model,"reviewStatus":"PENDING","savedToDb":false }),
     ))
 }
 
@@ -4448,10 +4532,44 @@ async fn list_vision_estimates(
         )
     })?;
     let db = state.db.ok_or_else(database_not_configured)?;
-    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, Decimal, String, i32, String, String, String, DateTime<Utc>)>(
-        "SELECT id,inventory_item_id,item_name,estimated_quantity,unit,confidence,recommendation,reason,submitted_email,created_at FROM inventory_vision_estimates WHERE warehouse_id=$1 AND status='PENDING' ORDER BY created_at DESC LIMIT 100",
+    let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, Decimal, String, i32, String, String, String, DateTime<Utc>, Value)>(
+        "SELECT id,inventory_item_id,item_name,estimated_quantity,unit,confidence,recommendation,reason,submitted_email,created_at,visual_features FROM inventory_vision_estimates WHERE warehouse_id=$1 AND status='PENDING' ORDER BY created_at DESC LIMIT 100",
     ).bind(warehouse_id).fetch_all(&db).await.map_err(internal_error)?;
-    Ok(Json(rows.into_iter().map(|row| serde_json::json!({"id":row.0,"inventoryItemId":row.1,"itemName":row.2,"estimatedQuantity":row.3,"unit":row.4,"confidence":row.5,"recommendation":row.6,"reason":row.7,"submittedEmail":row.8,"createdAt":row.9})).collect()))
+    Ok(Json(rows.into_iter().map(|row| serde_json::json!({"id":row.0,"inventoryItemId":row.1,"itemName":row.2,"estimatedQuantity":row.3,"unit":row.4,"confidence":row.5,"recommendation":row.6,"reason":row.7,"submittedEmail":row.8,"createdAt":row.9,"visualFeatures":row.10})).collect()))
+}
+
+async fn get_vision_estimate(
+    State(state): State<AppState>,
+    Query(query): Query<VisionEstimateQuery>,
+    axum::Extension(user): axum::Extension<AuthenticatedUser>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let id = query.id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "id is required".to_string(),
+        )
+    })?;
+    let warehouse_id = if user.role == "서버 관리자" {
+        query.warehouse_id
+    } else {
+        user.warehouse_id
+    }
+    .ok_or_else(|| (StatusCode::BAD_REQUEST, "warehouseId is required".to_string()))?;
+    let db = state.db.ok_or_else(database_not_configured)?;
+    let row = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, Decimal, String, i32, String, String, String, DateTime<Utc>, Value, Option<String>)>(
+        "SELECT id,inventory_item_id,item_name,estimated_quantity,unit,confidence,recommendation,reason,submitted_email,created_at,visual_features,image_snapshot FROM inventory_vision_estimates WHERE id=$1 AND warehouse_id=$2",
+    )
+    .bind(id)
+    .bind(warehouse_id)
+    .fetch_optional(&db)
+    .await
+    .map_err(internal_error)?
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "비전 분석 결과를 찾을 수 없습니다.".to_string()))?;
+    Ok(Json(serde_json::json!({
+        "id":row.0,"inventoryItemId":row.1,"itemName":row.2,"estimatedQuantity":row.3,
+        "unit":row.4,"confidence":row.5,"recommendation":row.6,"reason":row.7,
+        "submittedEmail":row.8,"createdAt":row.9,"visualFeatures":row.10,"imageSnapshot":row.11
+    })))
 }
 
 async fn review_vision_estimate(

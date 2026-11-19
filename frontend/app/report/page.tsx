@@ -8,6 +8,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import InventoryDataTools from '../../components/InventoryDataTools';
+import VisionAnalysisTools from '../../components/VisionAnalysisTools';
 import { normalizeApiNumbers } from '../../lib/normalizeApiNumbers';
 import { formatQty, formatDiffText } from '../../lib/formatQuantity';
 import { useBarcodeMode } from '../../lib/barcodeMode';
@@ -598,6 +599,14 @@ export default function InventoryReportPage() {
       </div>
 
       <InventoryDataTools warehouseId={user?.warehouseId} role={user?.role} inventoryRevision={inventoryRevision} onChanged={() => void fetchData(true)} />
+      <VisionAnalysisTools
+        warehouseId={user?.warehouseId}
+        role={user?.role}
+        onChanged={() => {
+          setInventoryRevision((revision) => revision + 1);
+          void fetchData(true);
+        }}
+      />
 
       {/* 재고 상태 상세 모달 */}
       <AnimatePresence>

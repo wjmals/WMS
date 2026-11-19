@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS inventory_vision_estimates (
     confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
     recommendation TEXT NOT NULL,
     reason TEXT NOT NULL,
+    visual_features JSONB NOT NULL DEFAULT '{}'::jsonb,
     image_snapshot TEXT,
     submitted_by TEXT NOT NULL,
     submitted_email TEXT NOT NULL,
