@@ -498,7 +498,7 @@ export default function InventoryDashboard() {
     || item.barcode?.toLocaleLowerCase().includes(heatmapSearchKey)
   );
   const replenishmentItems = gridHeatmapItems
-    .filter((item) => item.safe > 0 && item.status === 'shortage')
+    .filter((item) => item.safe > 0 && item.current < item.safe)
     .sort((a, b) => (b.safe - b.current) / b.safe - (a.safe - a.current) / a.safe);
 
   // 구역 수정 모달 열기
@@ -836,7 +836,7 @@ export default function InventoryDashboard() {
             <aside className="min-w-0 overflow-hidden rounded-md border border-gray-200 dark:border-gray-800">
               <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-800">
                 <h3 className="text-sm font-bold text-textMain dark:text-white">보충 필요</h3>
-                <p className="mt-1 text-[11px] text-textMuted">{replenishmentItems.length}개 품목 · 재고 부족 판정 품목을 안전재고 미달률 순으로 표시</p>
+                <p className="mt-1 text-[11px] text-textMuted">{replenishmentItems.length}개 품목 · 안전재고보다 적은 품목을 미달률 순으로 표시</p>
               </div>
               <div className="max-h-[560px] divide-y divide-gray-100 overflow-y-auto dark:divide-gray-800">
                 {replenishmentItems.length ? replenishmentItems.map((item) => {
