@@ -354,10 +354,10 @@ export default function BarcodeScannerPage() {
   // 바코드/QR/품목명 검색. 정확히 일치하면 scanMode에 따라 입출고까지 자동 처리한다.
   const handleScan = (rawQuery: string, fromCamera: boolean) => {
     const query = rawQuery.replace(/[\u0000-\u001f\u007f]/g, '').trim();
-    setBarcodeInput(query);
     if (!query) return;
     const found = findItem(query, fromCamera);
     if (!found) {
+      setBarcodeInput(query);
       const text = `'${query}' 코드와 일치하는 품목이 없습니다. 품목에 바코드가 등록되어 있는지 확인하세요.`;
       setLastScan({ type: 'error', text });
       setUpdateMsg({ type: 'error', text });
@@ -367,8 +367,10 @@ export default function BarcodeScannerPage() {
     setSelectedItem(matched);
     const text = `'${matched.name}' (${matched.barcode || matched.id}) 인식 완료`;
     if (found.exact && scanMode !== 'select') {
+      setBarcodeInput('');
       enqueueScanAdjustment(scanMode, matched);
     } else {
+      setBarcodeInput(query);
       setLastScan({ type: 'success', text });
       setUpdateMsg({ type: 'success', text: `${text}! 아래에서 입고/출고를 처리하세요.` });
     }
@@ -431,7 +433,6 @@ export default function BarcodeScannerPage() {
           setUpdateMsg({ type: 'success', text: message });
           setLastScan({ type: 'success', text: message });
         }
-        if (direction === 'inbound') setBarcodeInput('');
         return { ...target, ...updated };
       } else {
         setUpdateMsg({ type: 'error', text: body?.error || '재고 수량 변경 중 오류가 발생했습니다.' });
